@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Oman Swiss Army Launcher</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <div class="app">
+      <header class="app-header">
+        <div class="brand">
+          <div class="logo">
+            <span class="logo-core"></span>
+          </div>
+          <div class="brand-text">
+            <p class="eyebrow">Deployment Console</p>
+            <h1>Oman Swiss Army Launcher</h1>
+            <p class="subtitle">Lightweight control plane for the Oman Swiss Army Tool.</p>
+          </div>
+        </div>
+        <div class="status-stack">
+          <div class="status-chip" id="statusChip" data-tone="idle">Idle</div>
+          <div class="status-sub" id="statusSub">Waiting for action.</div>
+        </div>
+      </header>
+
+      <main class="content">
+        <section class="panel panel-primary">
+          <div class="panel-head">
+            <h2>Update Pipeline</h2>
+            <div class="badge" id="updateBadge">No data</div>
+          </div>
+          <div class="version-grid">
+            <div class="version-card">
+              <span>Local</span>
+              <strong id="localVersion">v0.0.0</strong>
+            </div>
+            <div class="version-card">
+              <span>Latest</span>
+              <strong id="latestVersion">--</strong>
+            </div>
+            <div class="version-card">
+              <span>Install</span>
+              <strong id="installPath">-</strong>
+            </div>
+          </div>
+          <div class="progress-wrap">
+            <div class="progress-track">
+              <div class="progress-bar" id="progressBar"></div>
+            </div>
+            <div class="progress-meta">
+              <span id="progressText">Standby</span>
+              <span id="progressPercent">0%</span>
+            </div>
+          </div>
+          <div class="actions">
+            <button class="btn btn-ghost" id="checkBtn">Check Update</button>
+            <button class="btn btn-primary" id="updateBtn">Force Update</button>
+          </div>
+        </section>
+
+        <section class="panel panel-secondary">
+          <div class="panel-head">
+            <h2>Runtime Control</h2>
+            <div class="badge badge-neutral" id="runtimeBadge">Stopped</div>
+          </div>
+          <div class="runtime-grid">
+            <div class="runtime-card">
+              <span>Port</span>
+              <strong id="appPort">1998</strong>
+            </div>
+            <div class="runtime-card">
+              <span>Process</span>
+              <strong id="appPid">-</strong>
+            </div>
+          </div>
+          <div class="actions">
+            <button class="btn btn-primary" id="startBtn">Start App</button>
+            <button class="btn btn-ghost" id="stopBtn">Stop App</button>
+          </div>
+          <div class="log-panel">
+            <div class="log-head">
+              <span>Activity Log</span>
+              <button class="btn btn-small" id="clearLogBtn">Clear</button>
+            </div>
+            <div class="log-body" id="log"></div>
+          </div>
+        </section>
+      </main>
+
+      <footer class="app-footer">
+        <div class="signal">
+          <span class="signal-dot"></span>
+          <span id="connectionStatus">GitHub: idle</span>
+        </div>
+        <div class="footer-meta">Launcher v<span id="launcherVersion">1.0.0</span></div>
+      </footer>
+    </div>
+    <div class="bg-grid" aria-hidden="true"></div>
+    <!-- Neutralino.js client. This file is gitignored, 
+        because `neu update` typically downloads it.
+        Avoid copy-pasting it. 
+        -->
+    <script src="/js/neutralino.js"></script>
+    <!-- Your app's source files -->
+    <script src="/js/main.js"></script>
+  </body>
+</html>
