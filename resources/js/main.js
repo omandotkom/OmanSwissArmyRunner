@@ -174,6 +174,39 @@ function log(message, tone, showInUI = true) {
     })();
 }
 
+async function checkPortActive(port) {
+    try {
+        const command = `powershell -NoProfile -Command "if (Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue) { 'true' } else { 'false' }"`;
+        const result = await Neutralino.os.execCommand(command);
+        return result.stdOut && result.stdOut.trim() === 'true';
+    } catch (err) {
+        return false;
+    }
+}
+
+async function ensureSingleInstance() {
+    const lockPath = await Neutralino.filesystem.getJoinedPath(NL_PATH, "instance.lock");
+    if (await pathExists(lockPath)) {
+        try {
+            const pid = await Neutralino.filesystem.readFile(lockPath);
+            // Check if process running
+            const cmd = `tasklist /FI "PID eq ${pid}" /NH`;
+            const res = await Neutralino.os.execCommand(cmd);
+            // If output contains the PID, it is likely running.
+            // Note: tasklist output format varies, but usually contains PID if found.
+            if (res.stdOut.includes(pid)) {
+                await Neutralino.os.showMessageBox("Already Running", "Another instance of the launcher is already running.", "OK", "ERROR");
+                await Neutralino.app.exit();
+                return false;
+            }
+        } catch (err) {
+            // Lock file might be corrupt or unreadable, ignore and overwrite
+        }
+    }
+    await Neutralino.filesystem.writeFile(lockPath, NL_PID.toString());
+    return true;
+}
+
 async function pathExists(path) {
     try {
         await Neutralino.filesystem.getStats(path);
@@ -780,6 +813,11 @@ async function checkInstallStatus() {
 
 async function init() {
     Neutralino.init();
+
+    // 1. Single Instance Check
+    const canRun = await ensureSingleInstance();
+    if (!canRun) return; // Exit initiated inside function
+
     Neutralino.events.on("windowClose", async () => {
         // Ensure app process is killed on exit
         await stopApp();
@@ -792,6 +830,11 @@ async function init() {
                 }
                 if (await pathExists(state.paths.stagingDir)) {
                     await removeDirectory(state.paths.stagingDir);
+                }
+                // Remove Lock File
+                const lockPath = await Neutralino.filesystem.getJoinedPath(NL_PATH, "instance.lock");
+                if (await pathExists(lockPath)) {
+                    await Neutralino.filesystem.remove(lockPath);
                 }
             } catch (err) {
                 console.error("Exit cleanup failed:", err);
@@ -827,6 +870,17 @@ async function init() {
     
     await checkInstallStatus();
     
+    // Check if port is ALREADY in use (External run)
+    const port = state.config.appPort || DEFAULT_APP_PORT;
+    if (await checkPortActive(port)) {
+        state.isRunning = true;
+        setRuntimeBadge("Running (Found)", "success");
+        log(`Detected active process on port ${port}. Attached control.`, "info");
+        // We don't have the PID if it wasn't started by us, so we can't kill by PID, only by Port.
+        // But stopApp handles 'kill by port' too.
+    }
+    updateButtonState();
+
     bindEvents();
     log("Launcher ready.");
     await checkForUpdates(true);
