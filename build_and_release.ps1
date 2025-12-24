@@ -48,7 +48,8 @@ try {
     }
 
     # 4. Kumpulkan File Hasil Build
-    $distFiles = Get-ChildItem ".\dist\*" -Include *.exe, *.zip, *.deb, *.AppImage, *.dmg
+    # Cari secara rekursif karena Neutralino menaruh file dalam subfolder (misal dist/BinaryName/...)
+    $distFiles = Get-ChildItem ".\dist" -Recurse -Include *.exe, *.zip, *.deb, *.AppImage, *.dmg
     if ($distFiles.Count -eq 0) {
         Write-Error "No build artifacts found in ./dist folder."
         throw "No artifacts found"
