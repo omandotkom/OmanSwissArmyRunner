@@ -828,10 +828,21 @@ async function init() {
     await checkForUpdates(true);
 
     // Auto-check worker (every 1 hour)
-    setInterval(() => {
+    setInterval(async () => {
         if (!state.busy) {
-            // Check silently without blocking
-            checkForUpdates(true).catch(err => console.error("Auto-check failed:", err));
+            try {
+                // Check silently
+                const release = await checkForUpdates(true);
+                
+                // If update is available, trigger it automatically
+                if (release && release.tag && release.tag !== state.config.localVersion) {
+                    log(`Auto-update detected new version: ${release.tag}. Starting update...`, "info");
+                    // We use 'true' to force it, though runUpdate checks version too.
+                    await runUpdate(true);
+                }
+            } catch (err) {
+                console.error("Auto-update worker failed:", err);
+            }
         }
     }, 60 * 60 * 1000);
 }
