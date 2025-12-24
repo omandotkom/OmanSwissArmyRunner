@@ -24,9 +24,9 @@
     "window": {
       "title": "Oman Swiss Army Launcher",
       "width": 780,
-      "height": 580,
+      "height": 750,
       "minWidth": 780,
-      "minHeight": 580,
+      "minHeight": 750,
       "center": true,
       "fullScreen": false,
       "alwaysOnTop": false,
@@ -36,7 +36,8 @@
       "maximize": false,
       "hidden": false,
       "resizable": false,
-      "exitProcessOnClose": true
+      "exitProcessOnClose": true,
+      "processArgs": "--disable-web-security"
     }
   },
   "cli": {

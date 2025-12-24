@@ -49,10 +49,13 @@
             <div class="progress-track">
               <div class="progress-bar" id="progressBar"></div>
             </div>
-            <div class="progress-meta">
-              <span id="progressText">Standby</span>
-              <span id="progressPercent">0%</span>
-            </div>
+                        <div class="progress-meta">
+                            <span id="progressText">Checking for updates...</span>
+                            <div>
+                                <span id="progressPercent">0%</span>
+                                <span id="stuckLabel" style="display: none;">(Please wait, it's normal)</span>
+                            </div>
+                        </div>
           </div>
           <div class="actions">
             <button class="btn btn-ghost" id="checkBtn">Check Update</button>

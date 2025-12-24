@@ -1,5 +1,5 @@
 {
-  "localVersion": "v0.0.0",
+  "localVersion": "v1.3.1",
   "installDir": "oman-swiss-army-tool",
   "startCommand": "cmd /c npm run start",
   "appPort": 1998,

@@ -315,6 +315,20 @@ body::after {
     color: var(--ink-muted);
 }
 
+#stuckLabel {
+    color: #ff9f1c; /* Orange warn tone */
+    font-size: 11px;
+    margin-left: 8px;
+    font-weight: 500;
+    animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+    0% { opacity: 0.6; }
+    50% { opacity: 1; }
+    100% { opacity: 0.6; }
+}
+
 .actions {
     display: flex;
     gap: 12px;
