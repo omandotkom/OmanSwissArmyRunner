@@ -62,21 +62,16 @@ try {
     # 5. Push ke GitHub Release
     Write-Host "`nChecking GitHub Release status for $tagName..." -ForegroundColor Cyan
 
-    # Cek apakah release sudah ada
-    $releaseExists = $false
-    try {
-        gh release view $tagName | Out-Null
-        $releaseExists = $true
-    } catch {
-        $releaseExists = $false
-    }
-
-    if ($releaseExists) {
+    # Cek apakah release sudah ada dengan cara yang lebih robust
+    # Kita tangkap outputnya. Jika error (exit code != 0), berarti belum ada.
+    $checkProc = Start-Process gh -ArgumentList "release view $tagName" -NoNewWindow -PassThru -Wait -RedirectStandardError "$env:TEMP\gh_err.log" -RedirectStandardOutput "$env:TEMP\gh_out.log"
+    
+    if ($checkProc.ExitCode -eq 0) {
         Write-Host "Release $tagName already exists. Uploading/Overwriting assets..." -ForegroundColor Yellow
         # Upload aset ke release yang sudah ada (clobber = overwrite)
         gh release upload $tagName $filePaths --clobber
     } else {
-        Write-Host "Creating new release $tagName..." -ForegroundColor Yellow
+        Write-Host "Release $tagName not found (creating new)..." -ForegroundColor Yellow
         # Buat release baru dan upload file sekaligus
         gh release create $tagName $filePaths --title "Release $tagName" --generate-notes
     }
