@@ -231,21 +231,26 @@ async function downloadFile(url, destination) {
     let receivedBytes = 0;
     
     try {
+        // 1. Initialize empty file (overwrite if exists)
+        await Neutralino.filesystem.writeBinaryFile(destination, new ArrayBuffer(0));
+
         const response = await fetch(url);
         if (!response.ok) throw new Error(`HTTP ${response.status} - ${response.statusText}`);
 
         const contentLength = +response.headers.get('Content-Length');
         const reader = response.body.getReader();
-        const chunks = [];
 
         while (true) {
             const { done, value } = await reader.read();
             if (done) break;
 
-            chunks.push(value);
+            // 2. Write chunk directly to disk (Append)
+            // value is a Uint8Array, we need to pass ArrayBuffer
+            await Neutralino.filesystem.appendBinaryFile(destination, value.buffer);
+            
             receivedBytes += value.length;
 
-            // Calculate Speed & Progress
+            // 3. Calculate Speed & Progress
             const now = Date.now();
             const elapsedSeconds = (now - startTime) / 1000;
             const speedMbps = (receivedBytes / 1024 / 1024) / elapsedSeconds;
@@ -265,20 +270,9 @@ async function downloadFile(url, destination) {
                 progressText = `Downloading: ${downloadedMB}/${totalMB} MB (${speedText})`;
             }
 
-            // Update UI (throttled slightly to prevent UI freeze, but every chunk is usually fine)
+            // Update UI
             setProgress(percent, progressText);
         }
-
-        // Combine chunks into a single ArrayBuffer
-        const combinedBuffer = new Uint8Array(receivedBytes);
-        let position = 0;
-        for (const chunk of chunks) {
-            combinedBuffer.set(chunk, position);
-            position += chunk.length;
-        }
-
-        // Write to file
-        await Neutralino.filesystem.writeBinaryFile(destination, combinedBuffer.buffer);
 
     } catch (err) {
         throw new Error(`Download failed: ${err.message}`);
@@ -293,10 +287,52 @@ async function removeDirectory(path) {
 }
 
 async function extractZip(zipPath, destination) {
-    const command = `powershell -NoProfile -Command "Expand-Archive -LiteralPath ${psQuote(zipPath)} -DestinationPath ${psQuote(destination)} -Force"`;
-    const result = await Neutralino.os.execCommand(command);
-    if (result.exitCode !== 0) {
-        throw new Error(result.stdErr || "Extraction failed.");
+    try {
+        // 1. Read ZIP file into memory (Safe for < 200MB files)
+        const fileData = await Neutralino.filesystem.readBinaryFile(zipPath);
+        
+        // 2. Load Zip
+        const zip = await JSZip.loadAsync(fileData);
+        
+        // 3. Prepare for extraction loop
+        const entries = Object.keys(zip.files);
+        const totalItems = entries.length;
+        let processedItems = 0;
+
+        // Helper to normalize path separators for Windows
+        const normalizePath = (p) => p.replace(/\//g, "\\");
+
+        for (const filename of entries) {
+            const file = zip.files[filename];
+            const fullPath = await Neutralino.filesystem.getJoinedPath(destination, filename);
+            
+            if (file.dir) {
+                // It's a directory, create it
+                await ensureDirectory(fullPath);
+            } else {
+                // It's a file
+                // Ensure parent directory exists first (in case zip entry order is random)
+                const parts = filename.split('/');
+                parts.pop(); // remove filename
+                if (parts.length > 0) {
+                    const parentDirRel = parts.join('/');
+                    const parentDirAbs = await Neutralino.filesystem.getJoinedPath(destination, parentDirRel);
+                    await ensureDirectory(parentDirAbs);
+                }
+
+                // Get content and write
+                const content = await file.async("uint8array");
+                await Neutralino.filesystem.writeBinaryFile(fullPath, content.buffer);
+            }
+
+            // Update Progress
+            processedItems++;
+            const percent = (processedItems / totalItems) * 100;
+            setProgress(percent, `Extracting: ${Math.round(percent)}%`);
+        }
+
+    } catch (err) {
+        throw new Error(`Extraction failed: ${err.message}`);
     }
 }
 
@@ -377,7 +413,7 @@ async function runUpdate(force) {
 
     setBusy(true);
     setStatus("Updating", "busy", "Preparing update pipeline.");
-    setProgress(8, "Preparing update");
+    setProgress(0, "Initializing...");
 
     try {
         const release = state.latest || (await checkForUpdates(true));
@@ -393,23 +429,34 @@ async function runUpdate(force) {
             return;
         }
 
-        const dlLabel = `Downloading package -> OmanSwissArmyTool (${release.tag})`;
+        // --- STAGE 1: DOWNLOAD (0-100%) ---
+        const dlLabel = `Downloading ${release.tag}`;
         log(dlLabel + "...");
-        setProgress(22, dlLabel);
+        setProgress(0, dlLabel);
         
         await downloadFile(release.url, state.paths.zipPath);
-        setProgress(45, "Stopping current app");
+        
+        // --- TRANSITION ---
+        log("Download complete. Preparing to extract...");
+        setProgress(0, "Preparing extraction..."); // Reset bar
+        
         await stopApp();
+        
         log("Cleaning install directory.");
         await removeDirectory(state.config.installDir);
         await removeDirectory(state.paths.stagingDir);
         await ensureDirectory(state.paths.stagingDir);
-        setProgress(65, "Extracting package");
+
+        // --- STAGE 2: EXTRACT (0-100%) ---
+        log("Extracting package...");
         await extractZip(state.paths.zipPath, state.paths.stagingDir);
+
+        // --- FINALIZE ---
         const extractedRoot = await selectExtractedRoot(state.paths.stagingDir);
-        setProgress(78, "Deploying update");
+        log("Deploying update...");
         await Neutralino.filesystem.move(extractedRoot, state.config.installDir);
         await removeDirectory(state.paths.stagingDir);
+        
         if (await pathExists(state.paths.zipPath)) {
             await Neutralino.filesystem.remove(state.paths.zipPath);
         }

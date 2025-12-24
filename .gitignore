@@ -1,6 +1,9 @@
 # Developer tools' files
 .lite_workspace.lua
 
+# Node.js dependencies
+node_modules/
+
 # Neutralinojs binaries and builds
 /bin
 /dist

@@ -1,0 +1,17 @@
+{
+  "name": "oman-swiss-army-runner",
+  "version": "1.0.0",
+  "description": "Launcher & Auto-Updater for Oman Swiss Army Tool",
+  "main": "resources/index.html",
+  "scripts": {
+    "start": "neu run",
+    "build": "neu build",
+    "update": "neu update"
+  },
+  "devDependencies": {
+    "@neutralinojs/neu": "^11.0.0"
+  },
+  "dependencies": {
+    "jszip": "^3.10.1"
+  }
+}
