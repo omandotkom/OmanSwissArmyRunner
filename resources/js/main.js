@@ -3,17 +3,24 @@
 const REPO_OWNER = "omandotkom";
 const REPO_NAME = "OmanSwissArmy";
 const APP_DIR_NAME = "oman-swiss-army-tool";
-const DEFAULT_START_CMD = "cmd /c npm run start";
+const DEFAULT_START_CMD = "cmd /c start.bat";
 const DEFAULT_APP_PORT = 1998;
 const CONFIG_FILENAME = "runner-config.json";
+const OC_TOOLS_URL = "https://mirror.openshift.com/pub/openshift-v4/clients/ocp/latest/openshift-client-windows.zip";
 
 const state = {
+// ... (rest of state)
     config: null,
     latest: null,
     paths: null,
     busy: false,
     currentPid: null,
-    isInstalled: false
+    isInstalled: false,
+    isRunning: false,
+    // Stuck Monitor State
+    lastProgressTime: 0,
+    monitorInterval: null,
+    currentPercent: -1
 };
 
 const ui = {
@@ -29,6 +36,7 @@ const ui = {
     progressBar: document.getElementById("progressBar"),
     progressText: document.getElementById("progressText"),
     progressPercent: document.getElementById("progressPercent"),
+    stuckLabel: document.getElementById("stuckLabel"),
     log: document.getElementById("log"),
     connectionStatus: document.getElementById("connectionStatus"),
     launcherVersion: document.getElementById("launcherVersion"),
@@ -38,6 +46,44 @@ const ui = {
     stopBtn: document.getElementById("stopBtn"),
     clearLogBtn: document.getElementById("clearLogBtn")
 };
+
+function startStuckMonitor() {
+    stopStuckMonitor(); // Ensure no duplicates
+    state.lastProgressTime = Date.now();
+    state.monitorInterval = setInterval(() => {
+        const now = Date.now();
+        // If > 5 seconds (5000ms) since last change
+        if (now - state.lastProgressTime > 5000) {
+            if (ui.stuckLabel.style.display === "none") {
+                ui.stuckLabel.style.display = "inline-block";
+            }
+        }
+    }, 1000); // Check every second
+}
+
+function stopStuckMonitor() {
+    if (state.monitorInterval) {
+        clearInterval(state.monitorInterval);
+        state.monitorInterval = null;
+    }
+    ui.stuckLabel.style.display = "none";
+}
+
+function updateButtonState() {
+    // Strict Button Logic
+    const hasUpdate = state.latest && state.latest.tag !== state.config.localVersion;
+    const canUpdate = !state.isInstalled || hasUpdate;
+    
+    ui.updateBtn.disabled = state.busy || !canUpdate;
+    
+    // Start enabled if: Not Busy AND Installed AND Not Running
+    ui.startBtn.disabled = state.busy || !state.isInstalled || state.isRunning;
+    
+    // Stop enabled if: Not Busy AND Running
+    ui.stopBtn.disabled = state.busy || !state.isRunning;
+    
+    ui.checkBtn.disabled = state.busy;
+}
 
 function setStatus(text, tone, subText) {
     ui.statusChip.textContent = text;
@@ -68,27 +114,64 @@ function setProgress(value, text) {
     if (text) {
         ui.progressText.textContent = text;
     }
+
+    // Stuck Monitor Logic:
+    // If percent actually changed, reset the timer and hide label
+    if (Math.round(safeValue) !== state.currentPercent) {
+        state.currentPercent = Math.round(safeValue);
+        state.lastProgressTime = Date.now();
+        ui.stuckLabel.style.display = "none";
+    }
 }
 
 function setBusy(isBusy) {
     state.busy = isBusy;
-    ui.checkBtn.disabled = isBusy;
-    ui.updateBtn.disabled = isBusy;
-    ui.startBtn.disabled = isBusy || !state.isInstalled;
-    ui.stopBtn.disabled = isBusy;
+    updateButtonState();
 }
 
-function timestamp() {
+function timestamp(full = false) {
     const now = new Date();
+    if (full) {
+        // Returns YYYY-MM-DD HH:MM:SS
+        const iso = now.toISOString();
+        return iso.replace("T", " ").split(".")[0];
+    }
     return now.toLocaleTimeString("en-GB", { hour12: false });
 }
 
-function log(message, tone) {
-    const line = document.createElement("div");
-    line.className = `log-line${tone ? " " + tone : ""}`;
-    line.textContent = `[${timestamp()}] ${message}`;
-    ui.log.appendChild(line);
-    ui.log.scrollTop = ui.log.scrollHeight;
+function log(message, tone, showInUI = true) {
+    // 1. Update UI (Sync)
+    if (showInUI) {
+        const line = document.createElement("div");
+        line.className = `log-line${tone ? " " + tone : ""}`;
+        line.textContent = `[${timestamp()}] ${message}`;
+        ui.log.appendChild(line);
+        ui.log.scrollTop = ui.log.scrollHeight;
+    }
+
+    // 2. Append to File (Async - Fire & Forget)
+    // We use NL_PATH directly to ensure it sits next to the executable
+    const logEntry = `[${timestamp(true)}] [${tone || "INFO"}] ${message}\n`;
+    
+    // Use a self-executing async function to handle the promise
+    (async () => {
+        const writeLog = async (retry = false) => {
+            try {
+                if (typeof Neutralino !== 'undefined') {
+                    const logPath = await Neutralino.filesystem.getJoinedPath(NL_PATH, "runner.log");
+                    await Neutralino.filesystem.appendFile(logPath, logEntry);
+                }
+            } catch (err) {
+                if (!retry) {
+                    // Simple retry logic: wait 100ms and try once more
+                    setTimeout(() => writeLog(true), 100);
+                } else {
+                    console.error("Failed to write to log file after retry:", err);
+                }
+            }
+        };
+        await writeLog();
+    })();
 }
 
 async function pathExists(path) {
@@ -202,11 +285,15 @@ async function checkForUpdates(silent) {
         } else {
             setUpdateBadge("Up to date", "success");
             setStatus("Up to date", "ok", "No updates needed.");
-            ui.updateBtn.textContent = "Force Update";
+            ui.updateBtn.textContent = "Up to date";
             if (!silent) {
                 log("Already on the latest version.");
             }
         }
+        
+        // Refresh button state (Enable/Disable based on new latest info)
+        setBusy(state.busy);
+        
         return release;
     } catch (err) {
         state.latest = null;
@@ -214,6 +301,10 @@ async function checkForUpdates(silent) {
         setUpdateBadge("Offline");
         setStatus("Offline", "warn", "Update check failed.");
         log(`Update check failed: ${err.message}`, "error");
+        
+        // Refresh button state even on error
+        setBusy(state.busy);
+        
         return null;
     }
 }
@@ -227,56 +318,84 @@ function psQuote(value) {
 }
 
 async function downloadFile(url, destination) {
-    const startTime = Date.now();
-    let receivedBytes = 0;
-    
-    try {
-        // 1. Initialize empty file (overwrite if exists)
-        await Neutralino.filesystem.writeBinaryFile(destination, new ArrayBuffer(0));
+    return new Promise(async (resolve, reject) => {
+        let processId = null;
+        // Fix: Extract script to temp file because PowerShell cannot run scripts from inside resources.neu
+        let tempScriptPath = null;
 
-        const response = await fetch(url);
-        if (!response.ok) throw new Error(`HTTP ${response.status} - ${response.statusText}`);
-
-        const contentLength = +response.headers.get('Content-Length');
-        const reader = response.body.getReader();
-
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            // 2. Write chunk directly to disk (Append)
-            // value is a Uint8Array, we need to pass ArrayBuffer
-            await Neutralino.filesystem.appendBinaryFile(destination, value.buffer);
+        try {
+            // Use fetch to get the file from the resource bundle (served by Neutralino)
+            // instead of filesystem.readFile which looks for physical files.
+            const response = await fetch("../downloader.ps1");
+            if (!response.ok) throw new Error(`Fetch failed: ${response.status}`);
+            const rawScript = await response.text();
             
-            receivedBytes += value.length;
-
-            // 3. Calculate Speed & Progress
-            const now = Date.now();
-            const elapsedSeconds = (now - startTime) / 1000;
-            const speedMbps = (receivedBytes / 1024 / 1024) / elapsedSeconds;
-            
-            let speedText = speedMbps.toFixed(2) + " MB/s";
-            if (speedMbps < 1) {
-                speedText = (speedMbps * 1024).toFixed(0) + " KB/s";
-            }
-
-            let progressText = `Downloading: ${speedText}`;
-            let percent = 0;
-
-            if (contentLength && contentLength > 0) {
-                percent = (receivedBytes / contentLength) * 100;
-                const downloadedMB = (receivedBytes / 1024 / 1024).toFixed(1);
-                const totalMB = (contentLength / 1024 / 1024).toFixed(1);
-                progressText = `Downloading: ${downloadedMB}/${totalMB} MB (${speedText})`;
-            }
-
-            // Update UI
-            setProgress(percent, progressText);
+            tempScriptPath = await Neutralino.filesystem.getJoinedPath(NL_PATH, "temp_downloader_" + Date.now() + ".ps1");
+            await Neutralino.filesystem.writeFile(tempScriptPath, rawScript);
+        } catch (err) {
+            return reject(new Error(`Failed to extract downloader script: ${err.message}`));
         }
+        
+        // Convert paths to Windows format for PowerShell
+        const winScriptPath = tempScriptPath.replace(/\//g, "\\");
+        const winDestPath = destination.replace(/\//g, "\\");
 
-    } catch (err) {
-        throw new Error(`Download failed: ${err.message}`);
-    }
+        const command = `powershell -NoProfile -ExecutionPolicy Bypass -File "${winScriptPath}" -Url "${url}" -Dest "${winDestPath}"`;
+        
+        log(`Starting native download via PowerShell...`, "INFO", false);
+
+        // Cleanup helper
+        const cleanup = async () => {
+            if (tempScriptPath) {
+                try {
+                    await Neutralino.filesystem.remove(tempScriptPath);
+                } catch (e) {
+                    console.error("Failed to delete temp script:", e);
+                }
+            }
+        };
+
+        // Event Handler for Process Output
+        const onProcessEvent = (event) => {
+            const data = event.detail;
+            if (data.id != processId) return;
+
+            if (data.action == 'stdOut') {
+                const lines = data.data.split('\n');
+                for (const line of lines) {
+                    const cleanLine = line.trim();
+                    if (cleanLine.startsWith("PROGRESS:")) {
+                        const percent = parseInt(cleanLine.split(':')[1]);
+                        setProgress(percent, `Downloading package...`);
+                    } else if (cleanLine === "DONE") {
+                        // Success handled in exit, but good to know
+                    } else if (cleanLine.startsWith("ERROR:")) {
+                        // Capture error from script
+                        cleanup();
+                        reject(new Error(cleanLine.substring(6)));
+                    }
+                }
+            } else if (data.action == 'exit') {
+                Neutralino.events.off('spawnedProcess', onProcessEvent);
+                cleanup();
+                if (data.data == 0) {
+                    resolve();
+                } else {
+                    reject(new Error(`Downloader exited with code ${data.data}`));
+                }
+            }
+        };
+
+        try {
+            await Neutralino.events.on('spawnedProcess', onProcessEvent);
+            const process = await Neutralino.os.spawnProcess(command);
+            processId = process.id;
+        } catch (err) {
+            Neutralino.events.off('spawnedProcess', onProcessEvent);
+            cleanup();
+            reject(new Error(`Failed to spawn downloader: ${err.message}`));
+        }
+    });
 }
 
 async function removeDirectory(path) {
@@ -288,7 +407,7 @@ async function removeDirectory(path) {
 
 async function extractZip(zipPath, destination) {
     try {
-        // 1. Read ZIP file into memory (Safe for < 200MB files)
+        // 1. Read ZIP file into memory
         const fileData = await Neutralino.filesystem.readBinaryFile(zipPath);
         
         // 2. Load Zip
@@ -299,36 +418,65 @@ async function extractZip(zipPath, destination) {
         const totalItems = entries.length;
         let processedItems = 0;
 
-        // Helper to normalize path separators for Windows
-        const normalizePath = (p) => p.replace(/\//g, "\\");
+        for (const rawFilename of entries) {
+            // Debug logging to find stuck file
+            log(`Unzipping: ${rawFilename}`, "INFO", false); 
 
-        for (const filename of entries) {
-            const file = zip.files[filename];
-            const fullPath = await Neutralino.filesystem.getJoinedPath(destination, filename);
+            const file = zip.files[rawFilename];
             
-            if (file.dir) {
-                // It's a directory, create it
-                await ensureDirectory(fullPath);
-            } else {
-                // It's a file
-                // Ensure parent directory exists first (in case zip entry order is random)
-                const parts = filename.split('/');
-                parts.pop(); // remove filename
-                if (parts.length > 0) {
-                    const parentDirRel = parts.join('/');
-                    const parentDirAbs = await Neutralino.filesystem.getJoinedPath(destination, parentDirRel);
-                    await ensureDirectory(parentDirAbs);
-                }
+            // Normalize separators to Windows style backslash for local paths
+            // But keep track if it ended with a slash for directory detection
+            const isExplicitDirectory = file.dir || rawFilename.endsWith("/") || rawFilename.endsWith("\\");
+            const safeFilename = rawFilename.replace(/\//g, "\\");
+            const fullPath = await Neutralino.filesystem.getJoinedPath(destination, safeFilename);
+            
+            try {
+                if (isExplicitDirectory) {
+                    await ensureDirectory(fullPath);
+                } else {
+                    // It's a file (or a mislabeled directory entry)
+                    
+                    // 1. Ensure parent directory exists
+                    // We use string manipulation because we are constructing the path structure
+                    const lastSlash = safeFilename.lastIndexOf("\\");
+                    if (lastSlash !== -1) {
+                        const parentRel = safeFilename.substring(0, lastSlash);
+                        const parentAbs = await Neutralino.filesystem.getJoinedPath(destination, parentRel);
+                        await ensureDirectory(parentAbs);
+                    }
 
-                // Get content and write
-                const content = await file.async("uint8array");
-                await Neutralino.filesystem.writeBinaryFile(fullPath, content.buffer);
+                    // 2. Check for conflict: If a directory with this name ALREADY exists, skip writing.
+                    if (await pathExists(fullPath)) {
+                         const stats = await Neutralino.filesystem.getStats(fullPath);
+                         if (stats.isDirectory) {
+                             processedItems++;
+                             continue; 
+                         }
+                    }
+
+                    // 3. Write content
+                    const content = await file.async("uint8array");
+                    await Neutralino.filesystem.writeBinaryFile(fullPath, content.buffer);
+
+                    // Hack: If .exe, wait a bit to let Antivirus breathe
+                    if (safeFilename.endsWith(".exe")) {
+                        await new Promise(r => setTimeout(r, 200));
+                    }
+                }
+            } catch (innerErr) {
+                log(`Failed to extract entry: ${rawFilename} - ${innerErr.message}`, "warn");
+                // Don't stop the whole process, try next file? 
+                // Or maybe critical. Let's log and continue for now to see if it finishes.
             }
 
             // Update Progress
             processedItems++;
             const percent = (processedItems / totalItems) * 100;
-            setProgress(percent, `Extracting: ${Math.round(percent)}%`);
+            // Show filename in UI (truncate if too long to avoid layout break)
+            let displayNames = rawFilename;
+            if (displayNames.length > 50) displayNames = "..." + displayNames.substring(displayNames.length - 50);
+            
+            setProgress(percent, `Extracting: ${displayNames}`);
         }
 
     } catch (err) {
@@ -348,16 +496,10 @@ async function selectExtractedRoot(stagingDir) {
 }
 
 async function resolveStartCommand(config) {
-    if (config.startCommand && config.startCommand.trim().length > 0) {
-        return config.startCommand;
-    }
-
-    const startBat = await Neutralino.filesystem.getJoinedPath(config.installDir, "start.bat");
-    if (await pathExists(startBat)) {
-        return "cmd /c start.bat";
-    }
-
-    return DEFAULT_START_CMD;
+    // Menggunakan node langsung sesuai instruksi user, dengan PORT 1998 wajib.
+    // Kita gunakan cmd /c untuk memastikan environment variable PORT terset dengan benar sebelum node jalan.
+    const port = config.appPort || 1998;
+    return `cmd /c "set PORT=${port} && node server.js"`;
 }
 
 async function startApp() {
@@ -373,10 +515,23 @@ async function startApp() {
         state.currentPid = result.pid;
         ui.appPid.textContent = `${result.pid}`;
         setRuntimeBadge("Running", "success");
-        log("Application started.");
+        log("Application started (Direct Node).");
+        
+        state.isRunning = true;
+        updateButtonState();
+
+        // Buka browser manual karena kita bypass start.bat
+        const port = state.config.appPort || 1998;
+        log(`Opening browser at http://localhost:${port}...`);
+        setTimeout(() => {
+            Neutralino.os.open(`http://localhost:${port}`);
+        }, 3000);
+
     } catch (err) {
         setRuntimeBadge("Start failed", "attn");
         log(`Start failed: ${err.message}`, "error");
+        state.isRunning = false;
+        updateButtonState();
     }
 }
 
@@ -404,6 +559,32 @@ async function stopApp() {
 
     ui.appPid.textContent = "-";
     setRuntimeBadge("Stopped", "badge-neutral");
+    
+    state.isRunning = false;
+    updateButtonState();
+}
+
+async function extractZipNative(zipPath, destination) {
+    // Native extraction using PowerShell to handle large files (avoid OOM)
+    // Progress is indeterminate (user just waits)
+    try {
+        // Ensure destination exists
+        await ensureDirectory(destination);
+
+        const winZipPath = zipPath.replace(/\//g, "\\");
+        const winDestPath = destination.replace(/\//g, "\\");
+        
+        const command = `powershell -NoProfile -Command "Expand-Archive -LiteralPath '${winZipPath}' -DestinationPath '${winDestPath}' -Force"`;
+        
+        // This is a blocking call (await) until done
+        const result = await Neutralino.os.execCommand(command);
+        
+        if (result.exitCode !== 0) {
+            throw new Error(`Native unzip failed: ${result.stdErr}`);
+        }
+    } catch (err) {
+        throw new Error(`Native extraction failed: ${err.message}`);
+    }
 }
 
 async function runUpdate(force) {
@@ -414,6 +595,7 @@ async function runUpdate(force) {
     setBusy(true);
     setStatus("Updating", "busy", "Preparing update pipeline.");
     setProgress(0, "Initializing...");
+    startStuckMonitor(); // Start watching for stalls
 
     try {
         const release = state.latest || (await checkForUpdates(true));
@@ -429,37 +611,102 @@ async function runUpdate(force) {
             return;
         }
 
-        // --- STAGE 1: DOWNLOAD (0-100%) ---
-        const dlLabel = `Downloading ${release.tag}`;
+        // --- PREPARE PATHS ---
+        // We need separate paths for App Zip and OC Zip
+        const appZipPath = state.paths.zipPath;
+        const ocZipPath = await Neutralino.filesystem.getJoinedPath(state.paths.dataDir, "oc_tools.zip");
+        const ocStagingDir = await Neutralino.filesystem.getJoinedPath(state.paths.dataDir, "oc_staging");
+        
+        // Target location for oc.exe
+        const binDir = await Neutralino.filesystem.getJoinedPath(state.config.installDir, "bin");
+        const ocExePath = await Neutralino.filesystem.getJoinedPath(binDir, "oc.exe");
+        const needOc = !(await pathExists(ocExePath));
+
+        // --- STAGE 1: DOWNLOAD APP (0-100%) ---
+        const dlLabel = `Downloading App (${release.tag})`;
         log(dlLabel + "...");
-        setProgress(0, dlLabel);
+        log(`App URL: ${release.url}`, "INFO", false);
+        setProgress(0, "Downloading App...");
         
-        await downloadFile(release.url, state.paths.zipPath);
+        await downloadFile(release.url, appZipPath);
         
+        // --- STAGE 2: DOWNLOAD OC TOOLS (0-100%) [Optional] ---
+        if (needOc) {
+            log("OC binary missing. Downloading tools...");
+            log(`OC URL: ${OC_TOOLS_URL}`, "INFO", false);
+            setProgress(0, "Downloading OC Tools...");
+            await downloadFile(OC_TOOLS_URL, ocZipPath);
+        }
+
         // --- TRANSITION ---
-        log("Download complete. Preparing to extract...");
-        setProgress(0, "Preparing extraction..."); // Reset bar
-        
+        log("Downloads complete. Preparing system...");
+        setProgress(0, "Stopping services...");
         await stopApp();
         
         log("Cleaning install directory.");
+        
+        let backupOcPath = null;
+        if (!needOc && (await pathExists(ocExePath))) {
+            log("Backing up existing OC binary...");
+            backupOcPath = await Neutralino.filesystem.getJoinedPath(state.paths.dataDir, "oc.exe.bak");
+            await Neutralino.filesystem.move(ocExePath, backupOcPath);
+        }
+
         await removeDirectory(state.config.installDir);
         await removeDirectory(state.paths.stagingDir);
         await ensureDirectory(state.paths.stagingDir);
 
-        // --- STAGE 2: EXTRACT (0-100%) ---
-        log("Extracting package...");
-        await extractZip(state.paths.zipPath, state.paths.stagingDir);
+        // --- STAGE 3: EXTRACT APP (0-100%) ---
+        // Use JSZip for detailed progress on app files
+        log("Extracting App package...");
+        setProgress(0, "Extracting App...");
+        await extractZip(appZipPath, state.paths.stagingDir);
 
-        // --- FINALIZE ---
-        const extractedRoot = await selectExtractedRoot(state.paths.stagingDir);
-        log("Deploying update...");
-        await Neutralino.filesystem.move(extractedRoot, state.config.installDir);
-        await removeDirectory(state.paths.stagingDir);
-        
-        if (await pathExists(state.paths.zipPath)) {
-            await Neutralino.filesystem.remove(state.paths.zipPath);
+        // --- STAGE 4: EXTRACT OC TOOLS (Indeterminate) [If downloaded] ---
+        if (needOc && (await pathExists(ocZipPath))) {
+            log("Extracting OC Tools (Large Binary)...");
+            // Set progress to something static or use a spinner text if possible
+            setProgress(100, "Extracting large binary (Please wait)..."); 
+            // We set it to 100 or 0? 
+            // Maybe 100 with text "Extracting..." is better than 0.
+            // Or ideally, indeterminate animation. For now, text warning is key.
+            
+            await removeDirectory(ocStagingDir);
+            await ensureDirectory(ocStagingDir);
+            
+            // Use NATIVE extraction for large file safety
+            await extractZipNative(ocZipPath, ocStagingDir);
         }
+
+        // --- DEPLOY APP ---
+        const extractedRoot = await selectExtractedRoot(state.paths.stagingDir);
+        log("Deploying App files...");
+        await Neutralino.filesystem.move(extractedRoot, state.config.installDir);
+
+        // --- STAGE 5: INSTALL OC BINARY ---
+        log("Installing binaries...");
+        await ensureDirectory(binDir); // Ensure bin folder exists
+
+        if (needOc) {
+            const possibleOc = await Neutralino.filesystem.getJoinedPath(ocStagingDir, "oc.exe");
+            if (await pathExists(possibleOc)) {
+                 await Neutralino.filesystem.move(possibleOc, ocExePath);
+                 log("Restored OC binary from download.");
+            } else {
+                log("Warning: oc.exe not found in downloaded zip!", "warn");
+            }
+        } else if (backupOcPath && (await pathExists(backupOcPath))) {
+            // Restore backup
+            await Neutralino.filesystem.move(backupOcPath, ocExePath);
+            log("Restored OC binary from backup.");
+        }
+
+        // --- CLEANUP ---
+        await removeDirectory(state.paths.stagingDir);
+        await removeDirectory(ocStagingDir);
+        if (await pathExists(state.paths.zipPath)) await Neutralino.filesystem.remove(state.paths.zipPath);
+        if (await pathExists(ocZipPath)) await Neutralino.filesystem.remove(ocZipPath);
+        if (backupOcPath && await pathExists(backupOcPath)) await Neutralino.filesystem.remove(backupOcPath);
 
         state.config.localVersion = release.tag;
         await saveConfig(state.paths, state.config);
@@ -470,12 +717,33 @@ async function runUpdate(force) {
         log(`Update complete: ${release.tag}`);
 
         state.isInstalled = true;
+        ui.updateBtn.textContent = "Up to date";
+        ui.startBtn.disabled = false;
+        
         await startApp();
     } catch (err) {
+        // Cleanup partial/corrupt zip file on error
+        try {
+            if (await pathExists(state.paths.zipPath)) {
+                await Neutralino.filesystem.remove(state.paths.zipPath);
+                log("Cleaned up partial download.", "warn");
+            }
+        } catch (cleanupErr) {
+            console.error("Cleanup failed:", cleanupErr);
+        }
+
         setStatus("Update failed", "warn", "Check log for details.");
         setProgress(0, "Standby");
         log(`Update failed: ${err.message}`, "error");
+
+        await Neutralino.os.showMessageBox(
+            "Update Error",
+            `Unable to complete the update.\n\nReason:\n${err.message}\n\nPlease check your internet connection and try again.`,
+            "OK",
+            "ERROR"
+        );
     } finally {
+        stopStuckMonitor(); // Cleanup monitor
         setBusy(false);
     }
 }
@@ -511,11 +779,44 @@ async function checkInstallStatus() {
 
 async function init() {
     Neutralino.init();
-    Neutralino.events.on("windowClose", () => Neutralino.app.exit());
+    Neutralino.events.on("windowClose", async () => {
+        // Cleanup leftover files on exit
+        if (state.paths) {
+            try {
+                if (await pathExists(state.paths.zipPath)) {
+                    await Neutralino.filesystem.remove(state.paths.zipPath);
+                }
+                if (await pathExists(state.paths.stagingDir)) {
+                    await removeDirectory(state.paths.stagingDir);
+                }
+            } catch (err) {
+                console.error("Exit cleanup failed:", err);
+            }
+        }
+        Neutralino.app.exit();
+    });
 
     ui.launcherVersion.textContent = NL_APPVERSION;
     state.paths = await resolvePaths();
     await ensureDirectory(state.paths.dataDir);
+
+    // Rotate Log: If runner.log > 5MB, delete it.
+    try {
+        const logPath = await Neutralino.filesystem.getJoinedPath(NL_PATH, "runner.log");
+        if (await pathExists(logPath)) {
+            const stats = await Neutralino.filesystem.getStats(logPath);
+            if (stats.size > 5 * 1024 * 1024) { // 5MB
+                await Neutralino.filesystem.remove(logPath);
+                // Log rotation event (will create new file)
+                // log("Log rotated due to size limit.", "info", false); 
+                // Can't log yet as ui/log might not handle file creation race if we just deleted it? 
+                // Actually log() appends, so it will just create new.
+            }
+        }
+    } catch (err) {
+        console.error("Log rotation check failed:", err);
+    }
+
     state.config = await loadConfig(state.paths);
     syncConfigUI(state.config);
     setProgress(0, "Standby");
@@ -525,6 +826,14 @@ async function init() {
     bindEvents();
     log("Launcher ready.");
     await checkForUpdates(true);
+
+    // Auto-check worker (every 1 hour)
+    setInterval(() => {
+        if (!state.busy) {
+            // Check silently without blocking
+            checkForUpdates(true).catch(err => console.error("Auto-check failed:", err));
+        }
+    }, 60 * 60 * 1000);
 }
 
 init();
