@@ -7,6 +7,7 @@ const DEFAULT_START_CMD = "cmd /c start.bat";
 const DEFAULT_APP_PORT = 1998;
 const CONFIG_FILENAME = "runner-config.json";
 const OC_TOOLS_URL = "https://mirror.openshift.com/pub/openshift-v4/clients/ocp/latest/openshift-client-windows.zip";
+const NODE_URL = "https://nodejs.org/dist/v20.18.1/win-x64/node.exe";
 
 const state = {
 // ... (rest of state)
@@ -532,7 +533,20 @@ async function resolveStartCommand(config) {
     // Menggunakan node langsung sesuai instruksi user, dengan PORT 1998 wajib.
     // Kita gunakan cmd /c untuk memastikan environment variable PORT terset dengan benar sebelum node jalan.
     const port = config.appPort || 1998;
-    return `cmd /c "set PORT=${port} && node server.js"`;
+    
+    // Cek apakah ada local node binary
+    const binDir = await Neutralino.filesystem.getJoinedPath(state.paths.dataDir, "bin");
+    const localNodePath = await Neutralino.filesystem.getJoinedPath(binDir, "node.exe");
+    
+    let nodeCmd = "node"; // Default global
+    if (await pathExists(localNodePath)) {
+        nodeCmd = quotePath(localNodePath);
+        log("Using local Node.js runtime.", "info", false);
+    } else {
+        log("Local Node.js not found, using global.", "warn", false);
+    }
+
+    return `cmd /c "set PORT=${port} && ${nodeCmd} server.js"`;
 }
 
 async function startApp() {
@@ -651,20 +665,41 @@ async function runUpdate(force) {
         const ocZipPath = await Neutralino.filesystem.getJoinedPath(state.paths.dataDir, "oc_tools.zip");
         const ocStagingDir = await Neutralino.filesystem.getJoinedPath(state.paths.dataDir, "oc_staging");
         
-        // Target location for oc.exe
+        // Target location for oc.exe and node.exe
         const binDir = await Neutralino.filesystem.getJoinedPath(state.config.installDir, "bin");
-        const ocExePath = await Neutralino.filesystem.getJoinedPath(binDir, "oc.exe");
+        // We actually store tools in the runner's bin/ folder, not the app's bin/ folder to persist them across updates?
+        // Wait, looking at lines below: "const binDir = ... state.config.installDir, 'bin'".
+        // If we put node.exe inside installDir, it gets deleted when we do removeDirectory(state.config.installDir).
+        // WE MUST STORE NODE.EXE OUTSIDE THE INSTALL DIR (e.g. in runner's root/bin).
+        
+        const runnerBinDir = await Neutralino.filesystem.getJoinedPath(state.paths.dataDir, "bin");
+        await ensureDirectory(runnerBinDir);
+
+        const nodeExePath = await Neutralino.filesystem.getJoinedPath(runnerBinDir, "node.exe");
+        const needNode = !(await pathExists(nodeExePath));
+
+        const ocExePath = await Neutralino.filesystem.getJoinedPath(runnerBinDir, "oc.exe");
         const needOc = !(await pathExists(ocExePath));
+
+        // --- STAGE 0: DOWNLOAD NODE.JS (0-100%) ---
+        if (needNode) {
+            log("Node.js runtime missing. Downloading...");
+            log(`Node URL: ${NODE_URL}`, "INFO", false);
+            setProgress(0, "Downloading Node.js Runtime...");
+            await downloadFile(NODE_URL, nodeExePath);
+            setProgress(100, "Node.js ready.");
+        }
 
         // --- STAGE 1: DOWNLOAD APP (0-100%) ---
         const dlLabel = `Downloading App (${release.tag})`;
         log(dlLabel + "...");
         log(`App URL: ${release.url}`, "INFO", false);
-        setProgress(0, "Downloading App...");
+        setProgress(0, "Downloading App Update...");
         
         await downloadFile(release.url, appZipPath);
         
         // --- STAGE 2: DOWNLOAD OC TOOLS (0-100%) [Optional] ---
+        // Note: oc.exe is also stored in runnerBinDir now to persist it
         if (needOc) {
             log("OC binary missing. Downloading tools...");
             log(`OC URL: ${OC_TOOLS_URL}`, "INFO", false);
@@ -679,13 +714,10 @@ async function runUpdate(force) {
         
         log("Cleaning install directory.");
         
-        let backupOcPath = null;
-        if (!needOc && (await pathExists(ocExePath))) {
-            log("Backing up existing OC binary...");
-            backupOcPath = await Neutralino.filesystem.getJoinedPath(state.paths.dataDir, "oc.exe.bak");
-            await Neutralino.filesystem.move(ocExePath, backupOcPath);
-        }
-
+        // We no longer need to backup OC from installDir, because we store it in runnerBinDir
+        // But for backward compatibility, if oc.exe exists in installDir/bin, we might want to move it out?
+        // For now, let's just stick to the new plan: tools live in runner's bin.
+        
         await removeDirectory(state.config.installDir);
         await removeDirectory(state.paths.stagingDir);
         await ensureDirectory(state.paths.stagingDir);
@@ -698,18 +730,24 @@ async function runUpdate(force) {
 
         // --- STAGE 4: EXTRACT OC TOOLS (Indeterminate) [If downloaded] ---
         if (needOc && (await pathExists(ocZipPath))) {
-            log("Extracting OC Tools (Large Binary)...");
-            // Set progress to something static or use a spinner text if possible
-            setProgress(100, "Extracting large binary (Please wait)..."); 
-            // We set it to 100 or 0? 
-            // Maybe 100 with text "Extracting..." is better than 0.
-            // Or ideally, indeterminate animation. For now, text warning is key.
+            log("Extracting OC Tools...");
+            setProgress(100, "Extracting OC Tools..."); 
             
             await removeDirectory(ocStagingDir);
             await ensureDirectory(ocStagingDir);
             
             // Use NATIVE extraction for large file safety
             await extractZipNative(ocZipPath, ocStagingDir);
+            
+            // Move oc.exe to runnerBinDir
+            const possibleOc = await Neutralino.filesystem.getJoinedPath(ocStagingDir, "oc.exe");
+            if (await pathExists(possibleOc)) {
+                 await Neutralino.filesystem.move(possibleOc, ocExePath);
+                 log("Installed OC binary.");
+            } else {
+                log("Warning: oc.exe not found in downloaded zip!", "warn");
+            }
+            await removeDirectory(ocStagingDir);
         }
 
         // --- DEPLOY APP ---
@@ -717,30 +755,10 @@ async function runUpdate(force) {
         log("Deploying App files...");
         await Neutralino.filesystem.move(extractedRoot, state.config.installDir);
 
-        // --- STAGE 5: INSTALL OC BINARY ---
-        log("Installing binaries...");
-        await ensureDirectory(binDir); // Ensure bin folder exists
-
-        if (needOc) {
-            const possibleOc = await Neutralino.filesystem.getJoinedPath(ocStagingDir, "oc.exe");
-            if (await pathExists(possibleOc)) {
-                 await Neutralino.filesystem.move(possibleOc, ocExePath);
-                 log("Restored OC binary from download.");
-            } else {
-                log("Warning: oc.exe not found in downloaded zip!", "warn");
-            }
-        } else if (backupOcPath && (await pathExists(backupOcPath))) {
-            // Restore backup
-            await Neutralino.filesystem.move(backupOcPath, ocExePath);
-            log("Restored OC binary from backup.");
-        }
-
         // --- CLEANUP ---
         await removeDirectory(state.paths.stagingDir);
-        await removeDirectory(ocStagingDir);
         if (await pathExists(state.paths.zipPath)) await Neutralino.filesystem.remove(state.paths.zipPath);
         if (await pathExists(ocZipPath)) await Neutralino.filesystem.remove(ocZipPath);
-        if (backupOcPath && await pathExists(backupOcPath)) await Neutralino.filesystem.remove(backupOcPath);
 
         state.config.localVersion = release.tag;
         await saveConfig(state.paths, state.config);
