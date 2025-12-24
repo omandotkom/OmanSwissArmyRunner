@@ -47,17 +47,47 @@ try {
         throw "GitHub CLI missing"
     }
 
-    # 4. Kumpulkan File Hasil Build
-    # Cari secara rekursif karena Neutralino menaruh file dalam subfolder (misal dist/BinaryName/...)
-    $distFiles = Get-ChildItem ".\dist" -Recurse -Include *.exe, *.zip, *.deb, *.AppImage, *.dmg
-    if ($distFiles.Count -eq 0) {
-        Write-Error "No build artifacts found in ./dist folder."
-        throw "No artifacts found"
+    # 3.b Package for Release (ZIP) - FIX: Bundle .exe + resources.neu
+    Write-Host "`nPackaging for Windows Release..." -ForegroundColor Cyan
+    $binDir = ".\dist\OmanRunner"
+    # Pastikan nama binary sesuai dengan config (OmanRunner) dan output neutralino
+    # Neutralino biasanya output: dist/BinaryName/BinaryName-win_x64.exe
+    $exeSource = "$binDir\OmanRunner-win_x64.exe"
+    $resSource = "$binDir\resources.neu"
+
+    if (-not (Test-Path $exeSource)) { throw "Critical file missing: $exeSource" }
+    if (-not (Test-Path $resSource)) { throw "Critical file missing: $resSource" }
+
+    # Ganti nama .exe agar lebih user friendly saat diekstrak (Opsional, tapi bagus)
+    # Kita copy ke temp folder untuk zipping
+    $tempZipDir = ".\dist\temp_zip_stage"
+    if (Test-Path $tempZipDir) { Remove-Item $tempZipDir -Recurse -Force }
+    New-Item -ItemType Directory -Path $tempZipDir | Out-Null
+    
+    Copy-Item $exeSource -Destination "$tempZipDir\OmanRunner.exe"
+    Copy-Item $resSource -Destination "$tempZipDir\resources.neu"
+    
+    # WebView2Loader.dll is embedded in newer Neutralino, but if present in folder, copy it too.
+    if (Test-Path "$binDir\WebView2Loader.dll") {
+        Copy-Item "$binDir\WebView2Loader.dll" -Destination $tempZipDir
     }
-    $filePaths = $distFiles | ForEach-Object { $_.FullName }
+
+    $zipName = "OmanSwissArmyRunner-Win64-$version.zip"
+    $zipPath = ".\dist\$zipName"
+    
+    Write-Host "Zipping to $zipPath..."
+    Compress-Archive -Path "$tempZipDir\*" -DestinationPath $zipPath -Force
+    
+    # Cleanup temp
+    Remove-Item $tempZipDir -Recurse -Force
+
+    Write-Host "Created bundle: $zipPath" -ForegroundColor Green
+
+    # 4. Kumpulkan File Hasil Build (Hanya upload ZIP bundle ini)
+    $filePaths = @(Resolve-Path $zipPath)
 
     Write-Host "`nFound artifacts to upload:" -ForegroundColor Yellow
-    $distFiles | ForEach-Object { Write-Host " - $($_.Name)" }
+    $filePaths | ForEach-Object { Write-Host " - $_" }
 
     # 5. Push ke GitHub Release
     Write-Host "`nChecking GitHub Release status for $tagName..." -ForegroundColor Cyan
