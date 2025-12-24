@@ -543,7 +543,8 @@ async function stopApp() {
         log("Stopped spawned process.");
     }
 
-    const port = state.config.appPort || DEFAULT_APP_PORT;
+    // Safely resolve port even if config is not fully loaded
+    const port = (state.config && state.config.appPort) ? state.config.appPort : DEFAULT_APP_PORT;
     const command = `powershell -NoProfile -Command "$pid = (Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty OwningProcess); if ($pid) { Stop-Process -Id $pid -Force; 'stopped'; } else { 'notfound'; }"`;
     const result = await Neutralino.os.execCommand(command);
     if (result.stdOut && result.stdOut.includes("stopped")) {
@@ -552,7 +553,7 @@ async function stopApp() {
         log(`No process found on port ${port}.`);
     }
 
-    if (state.config.allowNodeKill) {
+    if (state.config && state.config.allowNodeKill) {
         await Neutralino.os.execCommand("taskkill /F /IM node.exe");
         log("Forced stop for node.exe.", "warn");
     }
@@ -780,6 +781,9 @@ async function checkInstallStatus() {
 async function init() {
     Neutralino.init();
     Neutralino.events.on("windowClose", async () => {
+        // Ensure app process is killed on exit
+        await stopApp();
+
         // Cleanup leftover files on exit
         if (state.paths) {
             try {
