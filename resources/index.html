@@ -90,6 +90,35 @@
             <div class="log-body" id="log"></div>
           </div>
         </section>
+
+        <section class="panel panel-secondary" id="aiPanel">
+          <div class="panel-head">
+            <h2>AI Model (Optional)</h2>
+            <div class="badge badge-neutral" id="aiBadge">Checking...</div>
+          </div>
+          <div class="runtime-grid">
+            <div class="runtime-card">
+              <span>Status</span>
+              <strong id="aiStatus">Unknown</strong>
+            </div>
+            <div class="runtime-card">
+              <span>Total Size</span>
+              <strong id="aiSize">~500 MB</strong>
+            </div>
+          </div>
+          <div class="progress-wrap" id="aiProgressWrap" style="display: none;">
+            <div class="progress-track">
+              <div class="progress-bar" id="aiProgressBar"></div>
+            </div>
+            <div class="progress-meta">
+                <span id="aiProgressText">Downloading models...</span>
+                <span id="aiProgressPercent">0%</span>
+            </div>
+          </div>
+          <div class="actions">
+            <button class="btn btn-primary" id="downloadAiBtn" disabled>Download Models</button>
+          </div>
+        </section>
       </main>
 
       <footer class="app-footer">

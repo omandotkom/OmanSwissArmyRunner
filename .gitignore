@@ -19,3 +19,6 @@ neutralino.js
 oman-swiss-army-tool/
 instance.lock
 runner-config.json
+
+# Temporary Files
+temp_downloader_*.ps1

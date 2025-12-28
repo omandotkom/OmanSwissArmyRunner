@@ -9,6 +9,55 @@ const CONFIG_FILENAME = "runner-config.json";
 const OC_TOOLS_URL = "https://mirror.openshift.com/pub/openshift-v4/clients/ocp/latest/openshift-client-windows.zip";
 const NODE_URL = "https://nodejs.org/dist/v20.18.1/win-x64/node.exe";
 
+const AI_FILES = [
+    // Qwen2.5-Coder (0.5B) - Via Bantupedia Mirror (Custom Path & Rename)
+    {
+        url: "https://model.bantupedia.id/Qwen2.5-Coder-0.5B-Instruct/config.json",
+        path: "public/models/qwen25coder/config.json"
+    },
+    {
+        url: "https://model.bantupedia.id/Qwen2.5-Coder-0.5B-Instruct/special_tokens_map.json",
+        path: "public/models/qwen25coder/special_tokens_map.json"
+    },
+    {
+        url: "https://model.bantupedia.id/Qwen2.5-Coder-0.5B-Instruct/tokenizer.json",
+        path: "public/models/qwen25coder/tokenizer.json"
+    },
+    {
+        url: "https://model.bantupedia.id/Qwen2.5-Coder-0.5B-Instruct/tokenizer_config.json",
+        path: "public/models/qwen25coder/tokenizer_config.json"
+    },
+    {
+        url: "https://model.bantupedia.id/Qwen2.5-Coder-0.5B-Instruct/onnx/model_quantized.onnx",
+        path: "public/models/qwen25coder/onnx/decoder_model_merged_quantized.onnx"
+    },
+    // Xenova/all-MiniLM-L6-v2 - Via HuggingFace
+    {
+        url: "https://huggingface.co/Xenova/all-MiniLM-L6-v2/resolve/main/config.json",
+        path: "public/models/Xenova/all-MiniLM-L6-v2/config.json"
+    },
+    {
+        url: "https://huggingface.co/Xenova/all-MiniLM-L6-v2/resolve/main/tokenizer.json",
+        path: "public/models/Xenova/all-MiniLM-L6-v2/tokenizer.json"
+    },
+    {
+        url: "https://huggingface.co/Xenova/all-MiniLM-L6-v2/resolve/main/tokenizer_config.json",
+        path: "public/models/Xenova/all-MiniLM-L6-v2/tokenizer_config.json"
+    },
+    {
+        url: "https://huggingface.co/Xenova/all-MiniLM-L6-v2/resolve/main/special_tokens_map.json",
+        path: "public/models/Xenova/all-MiniLM-L6-v2/special_tokens_map.json"
+    },
+    {
+        url: "https://huggingface.co/Xenova/all-MiniLM-L6-v2/resolve/main/vocab.txt",
+        path: "public/models/Xenova/all-MiniLM-L6-v2/vocab.txt"
+    },
+    {
+        url: "https://huggingface.co/Xenova/all-MiniLM-L6-v2/resolve/main/onnx/model_quantized.onnx",
+        path: "public/models/Xenova/all-MiniLM-L6-v2/onnx/model_quantized.onnx"
+    }
+];
+
 const state = {
 // ... (rest of state)
     config: null,
@@ -18,6 +67,7 @@ const state = {
     currentPid: null,
     isInstalled: false,
     isRunning: false,
+    aiInstalled: false, // AI State
     // Stuck Monitor State
     lastProgressTime: 0,
     monitorInterval: null,
@@ -45,7 +95,16 @@ const ui = {
     updateBtn: document.getElementById("updateBtn"),
     startBtn: document.getElementById("startBtn"),
     stopBtn: document.getElementById("stopBtn"),
-    clearLogBtn: document.getElementById("clearLogBtn")
+    clearLogBtn: document.getElementById("clearLogBtn"),
+    // AI UI
+    aiBadge: document.getElementById("aiBadge"),
+    aiStatus: document.getElementById("aiStatus"),
+    aiSize: document.getElementById("aiSize"),
+    aiProgressWrap: document.getElementById("aiProgressWrap"),
+    aiProgressBar: document.getElementById("aiProgressBar"),
+    aiProgressText: document.getElementById("aiProgressText"),
+    aiProgressPercent: document.getElementById("aiProgressPercent"),
+    downloadAiBtn: document.getElementById("downloadAiBtn")
 };
 
 function startStuckMonitor() {
@@ -190,18 +249,34 @@ async function ensureSingleInstance() {
     if (await pathExists(lockPath)) {
         try {
             const pid = await Neutralino.filesystem.readFile(lockPath);
-            // Check if process running
-            const cmd = `tasklist /FI "PID eq ${pid}" /NH`;
+            // Check if process running using CSV format for easier parsing
+            const cmd = `tasklist /FI "PID eq ${pid}" /FO CSV /NH`;
             const res = await Neutralino.os.execCommand(cmd);
-            // If output contains the PID, it is likely running.
-            // Note: tasklist output format varies, but usually contains PID if found.
-            if (res.stdOut.includes(pid)) {
-                await Neutralino.os.showMessageBox("Already Running", "Another instance of the launcher is already running.", "OK", "ERROR");
-                await Neutralino.app.exit();
-                return false;
+            
+            // Output format example: "Image Name","PID","Session Name","Session#","Mem Usage"
+            // "OmanRunner.exe","1234","Console","1","25,000 K"
+            
+            const output = res.stdOut || "";
+            const lowerOutput = output.toLowerCase();
+            
+            // Check if the PID actually exists in the output (tasklist returns "No tasks are running..." if not found)
+            if (output.includes(`"${pid}"`) || output.includes(`,${pid},`)) {
+                // Verify it is OUR process. 
+                // Matches "OmanRunner.exe" or "neutralino-win_x64.exe" (dev mode)
+                if (lowerOutput.includes("omanrunner") || lowerOutput.includes("neutralino")) {
+                    await Neutralino.os.showMessageBox("Already Running", "Another instance of the launcher is already running.", "OK", "ERROR");
+                    await Neutralino.app.exit();
+                    return false;
+                } else {
+                    // PID exists but it's NOT our app (e.g. reused PID). Stale lock.
+                    log(`Found lock for PID ${pid} but it belongs to another process. Overwriting.`, "warn", false);
+                }
+            } else {
+                 // PID not found. Stale lock.
             }
         } catch (err) {
             // Lock file might be corrupt or unreadable, ignore and overwrite
+            console.error("Lock check error:", err);
         }
     }
     await Neutralino.filesystem.writeFile(lockPath, NL_PID.toString());
@@ -351,7 +426,7 @@ function psQuote(value) {
     return `'${value.replace(/'/g, "''")}'`;
 }
 
-async function downloadFile(url, destination) {
+async function downloadFile(url, destination, onProgress = null) {
     return new Promise(async (resolve, reject) => {
         let processId = null;
         // Fix: Extract script to temp file because PowerShell cannot run scripts from inside resources.neu
@@ -400,7 +475,11 @@ async function downloadFile(url, destination) {
                     const cleanLine = line.trim();
                     if (cleanLine.startsWith("PROGRESS:")) {
                         const percent = parseInt(cleanLine.split(':')[1]);
-                        setProgress(percent, `Downloading package...`);
+                        if (onProgress) {
+                            onProgress(percent, "Downloading package...");
+                        } else {
+                            setProgress(percent, `Downloading package...`);
+                        }
                     } else if (cleanLine === "DONE") {
                         // Success handled in exit, but good to know
                     } else if (cleanLine.startsWith("ERROR:")) {
@@ -430,6 +509,219 @@ async function downloadFile(url, destination) {
             reject(new Error(`Failed to spawn downloader: ${err.message}`));
         }
     });
+}
+
+function setAiProgress(value, text) {
+    const safeValue = Math.max(0, Math.min(100, value));
+    ui.aiProgressBar.style.width = `${safeValue}%`;
+    ui.aiProgressPercent.textContent = `${Math.round(safeValue)}%`;
+    if (text) {
+        ui.aiProgressText.textContent = text;
+    }
+}
+
+async function checkAiStatus() {
+    if (!state.isInstalled) {
+        state.aiInstalled = false;
+        ui.aiBadge.textContent = "App Missing";
+        ui.aiBadge.className = "badge badge-neutral";
+        ui.aiStatus.textContent = "N/A";
+        ui.downloadAiBtn.disabled = true;
+        return;
+    }
+
+    try {
+        // Check for the main ONNX files
+        const qwenPath = await Neutralino.filesystem.getJoinedPath(state.config.installDir, "public/models/qwen25coder/onnx/decoder_model_merged_quantized.onnx");
+        const miniLmPath = await Neutralino.filesystem.getJoinedPath(state.config.installDir, "public/models/Xenova/all-MiniLM-L6-v2/onnx/model_quantized.onnx");
+
+        let qwenValid = false;
+        let miniLmValid = false;
+
+        // Validation Logic: Check existence AND size > 1MB (to catch 0kb or partial HTML error responses)
+        if (await pathExists(qwenPath)) {
+            const stats = await Neutralino.filesystem.getStats(qwenPath);
+            if (stats.size > 1024 * 1024) qwenValid = true;
+        }
+
+        if (await pathExists(miniLmPath)) {
+            const stats = await Neutralino.filesystem.getStats(miniLmPath);
+            if (stats.size > 1024 * 1024) miniLmValid = true;
+        }
+
+        state.aiInstalled = qwenValid && miniLmValid;
+
+        if (state.aiInstalled) {
+            ui.aiBadge.textContent = "Installed";
+            ui.aiBadge.className = "badge success";
+            ui.aiStatus.textContent = "Ready";
+            ui.downloadAiBtn.disabled = true;
+            ui.downloadAiBtn.textContent = "Installed";
+        } else {
+            // Determine detailed status
+            const missing = [];
+            if (!qwenValid) missing.push("Qwen");
+            if (!miniLmValid) missing.push("Xenova");
+
+            ui.aiBadge.textContent = "Incomplete";
+            ui.aiBadge.className = "badge attn";
+            ui.aiStatus.textContent = `${missing.join(", ")} missing/corrupt`;
+            
+            // Only enable download if not busy
+            ui.downloadAiBtn.disabled = state.busy;
+            ui.downloadAiBtn.textContent = "Download/Repair Models";
+        }
+    } catch (err) {
+        console.error("AI Check failed:", err);
+    }
+}
+
+async function getRemoteFileSize(url) {
+    try {
+        const response = await fetch(url, { method: 'HEAD' });
+        if (response.ok) {
+            const length = response.headers.get('content-length');
+            return length ? parseInt(length, 10) : -1;
+        }
+    } catch (e) {
+        // CORS or network error, ignore
+    }
+    return -1;
+}
+
+async function downloadAiModels() {
+    if (state.busy) return;
+    setBusy(true);
+    ui.downloadAiBtn.disabled = true;
+    ui.aiProgressWrap.style.display = "flex";
+    
+    log("Starting AI Models download...", "info");
+
+    try {
+        const totalFiles = AI_FILES.length;
+        
+        for (let i = 0; i < totalFiles; i++) {
+            const fileInfo = AI_FILES[i];
+            
+            // Validate inputs
+            if (!state.config || !state.config.installDir) {
+                throw new Error("Install directory config is missing.");
+            }
+
+            const destPath = await Neutralino.filesystem.getJoinedPath(state.config.installDir, fileInfo.path);
+            
+            // Normalize path separators to backslash for Windows parsing logic
+            const safeDestPath = destPath.replace(/\//g, "\\");
+            const lastSlashIndex = safeDestPath.lastIndexOf("\\");
+            
+            // Ensure we have a valid parent directory
+            if (lastSlashIndex > 0) {
+                const dirPath = safeDestPath.substring(0, lastSlashIndex);
+                await Neutralino.os.execCommand(`cmd /c mkdir "${dirPath}"`);
+            }
+
+            const fileName = fileInfo.path.split("/").pop();
+            const stepPrefix = `[${i + 1}/${totalFiles}] ${fileName}`;
+
+            // --- SMART SKIP LOGIC ---
+            let shouldDownload = true;
+            if (await pathExists(destPath)) {
+                const localStats = await Neutralino.filesystem.getStats(destPath);
+                const remoteSize = await getRemoteFileSize(fileInfo.url);
+                
+                // If we got a valid remote size, compare strictly
+                if (remoteSize > 0) {
+                    if (localStats.size === remoteSize) {
+                        shouldDownload = false;
+                        log(`Skipping ${fileName} (Verified).`, "info", false);
+                        setAiProgress(100, `${stepPrefix} - Verified`);
+                    }
+                } else {
+                    // Fallback: If remote size unknown (CORS?), skip if local file is substantial (>1KB)
+                    // This assumes small files (JSON) are unlikely to be corrupt if they exist, 
+                    // and large files are checked by the main checkAiStatus logic later if they fail.
+                    if (localStats.size > 1024) {
+                        shouldDownload = false;
+                        log(`Skipping ${fileName} (Exists).`, "info", false);
+                        setAiProgress(100, `${stepPrefix} - Exists`);
+                    }
+                }
+            }
+
+            if (shouldDownload) {
+                await downloadFile(fileInfo.url, destPath, (percent) => {
+                    setAiProgress(percent, `${stepPrefix}`);
+                });
+            }
+            
+            // Brief pause to allow UI update
+            await new Promise(r => setTimeout(r, 50));
+        }
+
+        log("AI Models download/verification complete.", "success");
+        await checkAiStatus();
+
+    } catch (err) {
+        log(`AI Download failed: ${err.message}`, "error");
+        await Neutralino.os.showMessageBox("Download Failed", err.message, "OK", "ERROR");
+    } finally {
+        ui.aiProgressWrap.style.display = "none";
+        setBusy(false);
+        // re-check to update button state
+        await checkAiStatus();
+    }
+}
+
+async function backupAiModels() {
+    try {
+        const modelsPath = await Neutralino.filesystem.getJoinedPath(state.config.installDir, "public/models");
+        const backupPath = await Neutralino.filesystem.getJoinedPath(state.paths.dataDir, "models_backup");
+
+        if (await pathExists(modelsPath)) {
+            log("Backing up AI models...", "info", false);
+            // Remove old backup if exists
+            if (await pathExists(backupPath)) {
+                await removeDirectory(backupPath);
+            }
+            
+            try {
+                // Try clean move first
+                await Neutralino.filesystem.move(modelsPath, backupPath);
+                log("AI models backed up (Move).");
+            } catch (moveErr) {
+                log("Move failed, attempting copy fallback...", "warn");
+                // Fallback to xcopy (Windows)
+                // /E - recursive, /I - assume dir if dest missing, /Y - suppress prompt, /H - hidden files
+                const winSource = modelsPath.replace(/\//g, "\\");
+                const winDest = backupPath.replace(/\//g, "\\");
+                
+                await Neutralino.os.execCommand(`cmd /c xcopy "${winSource}" "${winDest}" /E /I /Y /H`);
+                log("AI models backed up (Copy).");
+            }
+        }
+    } catch (err) {
+        log("Backup AI models failed (non-fatal): " + err.message, "warn");
+    }
+}
+
+async function restoreAiModels() {
+    try {
+        const backupPath = await Neutralino.filesystem.getJoinedPath(state.paths.dataDir, "models_backup");
+        const modelsParent = await Neutralino.filesystem.getJoinedPath(state.config.installDir, "public");
+        const modelsDest = await Neutralino.filesystem.getJoinedPath(state.config.installDir, "public/models");
+
+        if (await pathExists(backupPath)) {
+            log("Restoring AI models...", "info", false);
+            // Ensure public exists
+            await Neutralino.os.execCommand(`cmd /c mkdir "${modelsParent}"`);
+            
+            // Move back
+            await Neutralino.filesystem.move(backupPath, modelsDest);
+            log("AI models restored.");
+        }
+    } catch (err) {
+        log("Restore AI models failed: " + err.message, "error");
+    }
 }
 
 async function removeDirectory(path) {
@@ -712,6 +1004,9 @@ async function runUpdate(force) {
         setProgress(0, "Stopping services...");
         await stopApp();
         
+        // BACKUP AI MODELS BEFORE DELETE
+        await backupAiModels();
+
         log("Cleaning install directory.");
         
         // We no longer need to backup OC from installDir, because we store it in runnerBinDir
@@ -754,6 +1049,10 @@ async function runUpdate(force) {
         const extractedRoot = await selectExtractedRoot(state.paths.stagingDir);
         log("Deploying App files...");
         await Neutralino.filesystem.move(extractedRoot, state.config.installDir);
+
+        // RESTORE AI MODELS
+        await restoreAiModels();
+        await checkAiStatus();
 
         // --- CLEANUP ---
         await removeDirectory(state.paths.stagingDir);
@@ -809,6 +1108,7 @@ function bindEvents() {
         ui.log.innerHTML = "";
         log("Log cleared.");
     });
+    ui.downloadAiBtn.addEventListener("click", () => downloadAiModels());
 }
 
 async function checkInstallStatus() {
@@ -825,6 +1125,7 @@ async function checkInstallStatus() {
         }
         ui.updateBtn.textContent = "Force Update";
     }
+    await checkAiStatus();
     // Update button state
     setBusy(state.busy);
 }
