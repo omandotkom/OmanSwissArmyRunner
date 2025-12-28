@@ -23,10 +23,10 @@
   "modes": {
     "window": {
       "title": "Oman Swiss Army Launcher",
-      "width": 1024,
-      "height": 1024,
-      "minWidth": 1024,
-      "minHeight": 1024,
+      "width": 920,
+      "height": 920,
+      "minWidth": 920,
+      "minHeight": 920,
       "center": true,
       "fullScreen": false,
       "alwaysOnTop": false,
