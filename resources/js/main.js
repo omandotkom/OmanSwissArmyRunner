@@ -31,29 +31,29 @@ const AI_FILES = [
         url: "https://model.bantupedia.id/Qwen2.5-Coder-0.5B-Instruct/onnx/model_quantized.onnx",
         path: "public/models/qwen25coder/onnx/decoder_model_merged_quantized.onnx"
     },
-    // Xenova/all-MiniLM-L6-v2 - Via HuggingFace
+    // Xenova/all-MiniLM-L6-v2 - Via Bantupedia Mirror
     {
-        url: "https://huggingface.co/Xenova/all-MiniLM-L6-v2/resolve/main/config.json",
+        url: "https://model.bantupedia.id/xenova_model/config.json",
         path: "public/models/Xenova/all-MiniLM-L6-v2/config.json"
     },
     {
-        url: "https://huggingface.co/Xenova/all-MiniLM-L6-v2/resolve/main/tokenizer.json",
+        url: "https://model.bantupedia.id/xenova_model/tokenizer.json",
         path: "public/models/Xenova/all-MiniLM-L6-v2/tokenizer.json"
     },
     {
-        url: "https://huggingface.co/Xenova/all-MiniLM-L6-v2/resolve/main/tokenizer_config.json",
+        url: "https://model.bantupedia.id/xenova_model/tokenizer_config.json",
         path: "public/models/Xenova/all-MiniLM-L6-v2/tokenizer_config.json"
     },
     {
-        url: "https://huggingface.co/Xenova/all-MiniLM-L6-v2/resolve/main/special_tokens_map.json",
+        url: "https://model.bantupedia.id/xenova_model/special_tokens_map.json",
         path: "public/models/Xenova/all-MiniLM-L6-v2/special_tokens_map.json"
     },
     {
-        url: "https://huggingface.co/Xenova/all-MiniLM-L6-v2/resolve/main/vocab.txt",
+        url: "https://model.bantupedia.id/xenova_model/vocab.txt",
         path: "public/models/Xenova/all-MiniLM-L6-v2/vocab.txt"
     },
     {
-        url: "https://huggingface.co/Xenova/all-MiniLM-L6-v2/resolve/main/onnx/model_quantized.onnx",
+        url: "https://model.bantupedia.id/xenova_model/onnx/model_quantized.onnx",
         path: "public/models/Xenova/all-MiniLM-L6-v2/onnx/model_quantized.onnx"
     }
 ];
@@ -167,12 +167,20 @@ function setRuntimeBadge(text, tone) {
     ui.runtimeBadge.classList.add(tone || "badge-neutral");
 }
 
-function setProgress(value, text) {
+function setProgress(value, text, speed) {
     const safeValue = Math.max(0, Math.min(100, value));
     ui.progressBar.style.width = `${safeValue}%`;
     ui.progressPercent.textContent = `${Math.round(safeValue)}%`;
-    if (text) {
-        ui.progressText.textContent = text;
+    
+    let finalText = text;
+    if (text && speed) {
+        finalText = `${text} (${speed})`;
+    } else if (text) {
+        finalText = text;
+    }
+    
+    if (finalText) {
+        ui.progressText.textContent = finalText;
     }
 
     // Stuck Monitor Logic:
@@ -473,12 +481,19 @@ async function downloadFile(url, destination, onProgress = null) {
                 const lines = data.data.split('\n');
                 for (const line of lines) {
                     const cleanLine = line.trim();
+                    // NEW FORMAT: PROGRESS:50|SPEED:1.5 MB/s
                     if (cleanLine.startsWith("PROGRESS:")) {
-                        const percent = parseInt(cleanLine.split(':')[1]);
+                        const parts = cleanLine.split('|');
+                        const progressPart = parts[0]; // PROGRESS:50
+                        const speedPart = parts.find(p => p.startsWith("SPEED:")) || "";
+                        
+                        const percent = parseInt(progressPart.split(':')[1]);
+                        const speed = speedPart ? speedPart.split(':')[1] : "";
+
                         if (onProgress) {
-                            onProgress(percent, "Downloading package...");
+                            onProgress(percent, "Downloading package...", speed);
                         } else {
-                            setProgress(percent, `Downloading package...`);
+                            setProgress(percent, `Downloading package...`, speed);
                         }
                     } else if (cleanLine === "DONE") {
                         // Success handled in exit, but good to know
@@ -511,12 +526,18 @@ async function downloadFile(url, destination, onProgress = null) {
     });
 }
 
-function setAiProgress(value, text) {
+function setAiProgress(value, text, speed) {
     const safeValue = Math.max(0, Math.min(100, value));
     ui.aiProgressBar.style.width = `${safeValue}%`;
     ui.aiProgressPercent.textContent = `${Math.round(safeValue)}%`;
-    if (text) {
-        ui.aiProgressText.textContent = text;
+    
+    let finalText = text;
+    if (text && speed) {
+        finalText = `${text} (${speed})`;
+    }
+    
+    if (finalText) {
+        ui.aiProgressText.textContent = finalText;
     }
 }
 
@@ -649,8 +670,8 @@ async function downloadAiModels() {
             }
 
             if (shouldDownload) {
-                await downloadFile(fileInfo.url, destPath, (percent) => {
-                    setAiProgress(percent, `${stepPrefix}`);
+                await downloadFile(fileInfo.url, destPath, (percent, text, speed) => {
+                    setAiProgress(percent, `${stepPrefix}`, speed);
                 });
             }
             
@@ -874,34 +895,50 @@ async function startApp() {
     }
 }
 
-async function stopApp() {
-    if (state.currentPid) {
-        await Neutralino.os.execCommand(`taskkill /T /F /PID ${state.currentPid}`);
-        state.currentPid = null;
+async function stopApp(isInternal = false) {
+    if (!isInternal) {
+        if (state.busy) return;
+        setBusy(true);
+        setStatus("Stopping", "busy");
+    }
+
+    try {
+        if (state.currentPid) {
+            await Neutralino.os.execCommand(`taskkill /T /F /PID ${state.currentPid}`);
+            state.currentPid = null;
+            ui.appPid.textContent = "-";
+            log("Stopped spawned process.");
+        }
+
+        // Safely resolve port even if config is not fully loaded
+        const port = (state.config && state.config.appPort) ? state.config.appPort : DEFAULT_APP_PORT;
+        const command = `powershell -NoProfile -Command "$pid = (Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty OwningProcess); if ($pid) { Stop-Process -Id $pid -Force; 'stopped'; } else { 'notfound'; }"`;
+        const result = await Neutralino.os.execCommand(command);
+        if (result.stdOut && result.stdOut.includes("stopped")) {
+            log(`Stopped process on port ${port}.`);
+        } else if (result.stdOut && result.stdOut.includes("notfound")) {
+            log(`No process found on port ${port}.`);
+        }
+
+        if (state.config && state.config.allowNodeKill) {
+            await Neutralino.os.execCommand("taskkill /F /IM node.exe");
+            log("Forced stop for node.exe.", "warn");
+        }
+
         ui.appPid.textContent = "-";
-        log("Stopped spawned process.");
+        setRuntimeBadge("Stopped", "badge-neutral");
+        
+        state.isRunning = false;
+        
+    } catch (err) {
+        log(`Stop failed: ${err.message}`, "error");
+    } finally {
+        if (!isInternal) {
+            setBusy(false);
+            setStatus("Ready", "idle");
+        }
+        updateButtonState();
     }
-
-    // Safely resolve port even if config is not fully loaded
-    const port = (state.config && state.config.appPort) ? state.config.appPort : DEFAULT_APP_PORT;
-    const command = `powershell -NoProfile -Command "$pid = (Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty OwningProcess); if ($pid) { Stop-Process -Id $pid -Force; 'stopped'; } else { 'notfound'; }"`;
-    const result = await Neutralino.os.execCommand(command);
-    if (result.stdOut && result.stdOut.includes("stopped")) {
-        log(`Stopped process on port ${port}.`);
-    } else if (result.stdOut && result.stdOut.includes("notfound")) {
-        log(`No process found on port ${port}.`);
-    }
-
-    if (state.config && state.config.allowNodeKill) {
-        await Neutralino.os.execCommand("taskkill /F /IM node.exe");
-        log("Forced stop for node.exe.", "warn");
-    }
-
-    ui.appPid.textContent = "-";
-    setRuntimeBadge("Stopped", "badge-neutral");
-    
-    state.isRunning = false;
-    updateButtonState();
 }
 
 async function extractZipNative(zipPath, destination) {
@@ -1002,7 +1039,7 @@ async function runUpdate(force) {
         // --- TRANSITION ---
         log("Downloads complete. Preparing system...");
         setProgress(0, "Stopping services...");
-        await stopApp();
+        await stopApp(true);
         
         // BACKUP AI MODELS BEFORE DELETE
         await backupAiModels();
@@ -1050,6 +1087,8 @@ async function runUpdate(force) {
         log("Deploying App files...");
         await Neutralino.filesystem.move(extractedRoot, state.config.installDir);
 
+        state.isInstalled = true;
+
         // RESTORE AI MODELS
         await restoreAiModels();
         await checkAiStatus();
@@ -1067,11 +1106,11 @@ async function runUpdate(force) {
         setStatus("Updated", "ok", "Launcher is ready.");
         log(`Update complete: ${release.tag}`);
 
-        state.isInstalled = true;
         ui.updateBtn.textContent = "Up to date";
         ui.startBtn.disabled = false;
         
-        await startApp();
+        // Manual Start required
+        // await startApp(); 
     } catch (err) {
         // Cleanup partial/corrupt zip file on error
         try {
@@ -1139,7 +1178,7 @@ async function init() {
 
     Neutralino.events.on("windowClose", async () => {
         // Ensure app process is killed on exit
-        await stopApp();
+        await stopApp(true);
 
         // Cleanup leftover files on exit
         if (state.paths) {
