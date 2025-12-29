@@ -104,7 +104,15 @@ const ui = {
     aiProgressBar: document.getElementById("aiProgressBar"),
     aiProgressText: document.getElementById("aiProgressText"),
     aiProgressPercent: document.getElementById("aiProgressPercent"),
-    downloadAiBtn: document.getElementById("downloadAiBtn")
+    downloadAiBtn: document.getElementById("downloadAiBtn"),
+    // Health UI
+    healthBadge: document.getElementById("healthBadge"),
+    healthCheckBtn: document.getElementById("healthCheckBtn"),
+    healthGrid: document.getElementById("healthGrid"),
+    metricRam: document.getElementById("metricRam"),
+    metricDisk: document.getElementById("metricDisk"),
+    metricNode: document.getElementById("metricNode"),
+    metricPort: document.getElementById("metricPort")
 };
 
 function startStuckMonitor() {
@@ -1135,6 +1143,91 @@ async function runUpdate(force) {
     } finally {
         stopStuckMonitor(); // Cleanup monitor
         setBusy(false);
+        // Refresh AI status to enable button if needed (now that busy is false)
+        await checkAiStatus();
+    }
+}
+
+async function runHealthCheck() {
+    if (state.busy) return;
+    
+    ui.healthBadge.textContent = "Checking...";
+    ui.healthBadge.className = "badge badge-neutral";
+    ui.healthCheckBtn.disabled = true;
+    ui.healthGrid.style.display = "none";
+
+    try {
+        // Fix: Extract script to temp file
+        let tempScriptPath = null;
+        try {
+            const response = await fetch("../healthcheck.ps1");
+            if (!response.ok) throw new Error(`Fetch failed: ${response.status}`);
+            const rawScript = await response.text();
+            
+            tempScriptPath = await Neutralino.filesystem.getJoinedPath(NL_PATH, "temp_healthcheck_" + Date.now() + ".ps1");
+            await Neutralino.filesystem.writeFile(tempScriptPath, rawScript);
+        } catch (err) {
+            throw new Error(`Failed to extract health script: ${err.message}`);
+        }
+
+        const winScriptPath = tempScriptPath.replace(/\//g, "\\");
+        const command = `powershell -NoProfile -ExecutionPolicy Bypass -File "${winScriptPath}"`;
+        
+        const result = await Neutralino.os.execCommand(command);
+        
+        // Cleanup
+        try {
+             await Neutralino.filesystem.remove(tempScriptPath);
+        } catch(e) {}
+
+        if (result.stdErr) {
+            console.warn("Health check stderr:", result.stdErr);
+        }
+
+        const data = JSON.parse(result.stdOut);
+        
+        // Update UI
+        ui.metricRam.textContent = `${Math.round(data.ramFree)} MB / ${Math.round(data.ramTotal)} MB`;
+        ui.metricDisk.textContent = `${data.diskFree} GB`;
+        ui.metricNode.textContent = data.nodeVersion;
+        ui.metricPort.textContent = data.portStatus;
+
+        // Visual Logic
+        let issues = 0;
+        
+        // RAM < 2GB Free?
+        if (data.ramFree < 2048) {
+            ui.metricRam.style.color = "orange";
+            issues++;
+        } else {
+            ui.metricRam.style.color = "inherit";
+        }
+
+        // Port Occupied?
+        if (data.portStatus !== "Free") {
+             ui.metricPort.style.color = "orange";
+             // If occupied by US (checked via other logic), it's fine. 
+             // But raw health check just reports status.
+        } else {
+             ui.metricPort.style.color = "inherit";
+        }
+
+        ui.healthGrid.style.display = "grid";
+        
+        if (issues > 0) {
+            ui.healthBadge.textContent = "Warnings Found";
+            ui.healthBadge.className = "badge attn";
+        } else {
+            ui.healthBadge.textContent = "Healthy";
+            ui.healthBadge.className = "badge success";
+        }
+
+    } catch (err) {
+        log(`Health check failed: ${err.message}`, "error");
+        ui.healthBadge.textContent = "Error";
+        ui.healthBadge.className = "badge attn";
+    } finally {
+        ui.healthCheckBtn.disabled = false;
     }
 }
 
@@ -1148,6 +1241,7 @@ function bindEvents() {
         log("Log cleared.");
     });
     ui.downloadAiBtn.addEventListener("click", () => downloadAiModels());
+    ui.healthCheckBtn.addEventListener("click", () => runHealthCheck());
 }
 
 async function checkInstallStatus() {

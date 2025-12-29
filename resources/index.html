@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Oman Swiss Army Launcher</title>
+    <link rel="icon" type="image/x-icon" href="/icons/appIcon.ico">
     <link rel="stylesheet" href="/styles.css">
   </head>
   <body>
@@ -119,6 +120,34 @@
           </div>
           <div class="actions">
             <button class="btn btn-primary" id="downloadAiBtn" disabled>Download Models</button>
+          </div>
+        </section>
+
+        <section class="panel panel-secondary" id="healthPanel">
+          <div class="panel-head">
+            <h2>System Diagnostics</h2>
+            <div class="badge badge-neutral" id="healthBadge">Standby</div>
+          </div>
+          <div class="actions">
+             <button class="btn btn-ghost" id="healthCheckBtn">Run Health Check</button>
+          </div>
+          <div class="runtime-grid" id="healthGrid" style="display: none; margin-top: 1rem;">
+            <div class="runtime-card">
+              <span>RAM (Free/Total)</span>
+              <strong id="metricRam">-</strong>
+            </div>
+            <div class="runtime-card">
+              <span>Disk (Free)</span>
+              <strong id="metricDisk">-</strong>
+            </div>
+            <div class="runtime-card">
+              <span>Node.js</span>
+              <strong id="metricNode">-</strong>
+            </div>
+             <div class="runtime-card">
+              <span>Port 1998</span>
+              <strong id="metricPort">-</strong>
+            </div>
           </div>
         </section>
       </main>
