@@ -1089,8 +1089,19 @@ async function runUpdate(force) {
                  const ocDestParent = await Neutralino.filesystem.getJoinedPath(state.config.installDir, "bin");
                  await ensureDirectory(ocDestParent);
 
-                 await Neutralino.filesystem.move(possibleOc, ocExePath);
-                 log("Installed OC binary.");
+                 // [MODIFIED] Force kill oc.exe to release lock
+                 try {
+                     await Neutralino.os.execCommand("taskkill /F /IM oc.exe");
+                 } catch (e) {
+                     // Ignore error if process wasn't running
+                 }
+
+                 // [MODIFIED] Use Copy instead of Move to avoid permission issues, using OS command for force overwrite
+                 const winSource = possibleOc.replace(/\//g, "\\");
+                 const winDest = ocExePath.replace(/\//g, "\\");
+                 await Neutralino.os.execCommand(`cmd /c copy /Y "${winSource}" "${winDest}"`);
+                 
+                 log("Installed OC binary (Copy Force).");
             } else {
                 log("Warning: oc.exe not found in downloaded zip!", "warn");
             }

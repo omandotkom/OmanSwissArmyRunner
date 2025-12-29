@@ -1,6 +1,6 @@
 {
   "name": "oman-swiss-army-runner",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "description": "Launcher & Auto-Updater for Oman Swiss Army Tool",
   "main": "resources/index.html",
   "scripts": {

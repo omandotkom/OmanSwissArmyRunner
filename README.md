@@ -3,7 +3,7 @@
 A lightweight, robust, and native launcher & auto-updater for the **Oman Swiss Army Tool**.  
 Built with [Neutralinojs](https://neutralino.js.org/), this runner serves as the "Commander" for the main Next.js application, handling installation, updates, dependency management, and AI model provisioning.
 
-![Version](https://img.shields.io/badge/version-1.3.0-blue.svg) ![Platform](https://img.shields.io/badge/platform-Windows-blue)
+![Version](https://img.shields.io/badge/version-1.3.1-blue.svg) ![Platform](https://img.shields.io/badge/platform-Windows-blue)
 
 ## 🚀 Key Features
 
