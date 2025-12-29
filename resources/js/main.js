@@ -1071,6 +1071,13 @@ async function runUpdate(force) {
         setProgress(0, "Extracting App...");
         await extractZip(appZipPath, state.paths.stagingDir);
 
+        // --- DEPLOY APP ---
+        const extractedRoot = await selectExtractedRoot(state.paths.stagingDir);
+        log("Deploying App files...");
+        await Neutralino.filesystem.move(extractedRoot, state.config.installDir);
+
+        state.isInstalled = true;
+
         // --- STAGE 4: EXTRACT OC TOOLS (Indeterminate) [If downloaded] ---
         if (needOc && (await pathExists(ocZipPath))) {
             log("Extracting OC Tools...");
@@ -1107,13 +1114,6 @@ async function runUpdate(force) {
             }
             await removeDirectory(ocStagingDir);
         }
-
-        // --- DEPLOY APP ---
-        const extractedRoot = await selectExtractedRoot(state.paths.stagingDir);
-        log("Deploying App files...");
-        await Neutralino.filesystem.move(extractedRoot, state.config.installDir);
-
-        state.isInstalled = true;
 
         // RESTORE AI MODELS
         await restoreAiModels();
@@ -1336,9 +1336,6 @@ async function init() {
 
     state.config = await loadConfig(state.paths);
     syncConfigUI(state.config);
-    setProgress(0, "Standby");
-    
-    await checkInstallStatus();
     
     // Check if port is ALREADY in use (External run)
     const port = state.config.appPort || DEFAULT_APP_PORT;
@@ -1353,7 +1350,17 @@ async function init() {
 
     bindEvents();
     log("Launcher ready.");
-    await checkForUpdates(true);
+    
+    // Async tasks (Non-blocking UI)
+    (async () => {
+        setBusy(true);
+        setStatus("Checking...", "busy", "Connecting to GitHub...");
+        
+        await checkInstallStatus(); // This includes checkAiStatus
+        await checkForUpdates(true);
+        
+        setBusy(false);
+    })();
 
     // Auto-check worker (every 1 hour)
     setInterval(async () => {
