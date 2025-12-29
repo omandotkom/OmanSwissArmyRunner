@@ -1015,8 +1015,11 @@ async function runUpdate(force) {
         const nodeExePath = await Neutralino.filesystem.getJoinedPath(runnerBinDir, "node.exe");
         const needNode = !(await pathExists(nodeExePath));
 
-        const ocExePath = await Neutralino.filesystem.getJoinedPath(runnerBinDir, "oc.exe");
-        const needOc = !(await pathExists(ocExePath));
+        // OC moves to app bin (volatile, inside installDir) per user request
+        const appBinDir = await Neutralino.filesystem.getJoinedPath(state.config.installDir, "bin");
+        const ocExePath = await Neutralino.filesystem.getJoinedPath(appBinDir, "oc.exe");
+        // Since we wipe installDir, we always need to restore OC
+        const needOc = true;
 
         // --- STAGE 0: DOWNLOAD NODE.JS (0-100%) ---
         if (needNode) {
@@ -1079,9 +1082,13 @@ async function runUpdate(force) {
             // Use NATIVE extraction for large file safety
             await extractZipNative(ocZipPath, ocStagingDir);
             
-            // Move oc.exe to runnerBinDir
+            // Move oc.exe to ocExePath (now inside installDir/bin)
             const possibleOc = await Neutralino.filesystem.getJoinedPath(ocStagingDir, "oc.exe");
             if (await pathExists(possibleOc)) {
+                 // Ensure parent dir exists (installDir/bin)
+                 const ocDestParent = await Neutralino.filesystem.getJoinedPath(state.config.installDir, "bin");
+                 await ensureDirectory(ocDestParent);
+
                  await Neutralino.filesystem.move(possibleOc, ocExePath);
                  log("Installed OC binary.");
             } else {
