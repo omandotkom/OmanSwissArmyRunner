@@ -260,6 +260,19 @@ async function checkPortActive(port) {
     }
 }
 
+async function getPidFromPort(port) {
+    try {
+        const command = `powershell -NoProfile -Command "(Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue).OwningProcess"`;
+        const result = await Neutralino.os.execCommand(command);
+        if (result.stdOut) {
+            return parseInt(result.stdOut.trim());
+        }
+    } catch (err) {
+        console.error("Failed to get PID from port:", err);
+    }
+    return null;
+}
+
 async function ensureSingleInstance() {
     const lockPath = await Neutralino.filesystem.getJoinedPath(NL_PATH, "instance.lock");
     if (await pathExists(lockPath)) {
@@ -757,7 +770,42 @@ async function removeDirectory(path) {
     if (!(await pathExists(path))) {
         return;
     }
-    await Neutralino.os.execCommand(`cmd /c rmdir /s /q ${quotePath(path)}`);
+    
+    // Retry logic for Windows file locking issues
+    const maxRetries = 5;
+    let attempt = 0;
+    let lastError = null;
+
+    while (attempt < maxRetries) {
+        try {
+            // Strategy A: Fast CMD removal
+            await Neutralino.os.execCommand(`cmd /c rmdir /s /q ${quotePath(path)}`);
+            
+            // Double check
+            if (!(await pathExists(path))) {
+                return; // Success
+            }
+
+            // Strategy B: PowerShell Force (Handles long paths & stuck files better)
+            log(`CMD delete failed. Trying PowerShell Force...`, "warn", false);
+            const winPath = path.replace(/\//g, "\\");
+            await Neutralino.os.execCommand(`powershell -NoProfile -Command "Remove-Item -LiteralPath '${winPath}' -Recurse -Force -ErrorAction Stop"`);
+            
+            if (!(await pathExists(path))) {
+                return; // Success
+            } else {
+                throw new Error("Directory persists after PowerShell removal.");
+            }
+
+        } catch (err) {
+            lastError = err;
+            attempt++;
+            log(`Delete failed (Attempt ${attempt}/${maxRetries}). Retrying in 1s...`, "warn", false);
+            await new Promise(r => setTimeout(r, 1000)); // Wait 1 second
+        }
+    }
+    
+    throw new Error(`Failed to delete ${path} after ${maxRetries} attempts. Error: ${lastError.message}`);
 }
 
 async function extractZip(zipPath, destination) {
@@ -903,50 +951,71 @@ async function startApp() {
     }
 }
 
-async function stopApp(isInternal = false) {
-    if (!isInternal) {
-        if (state.busy) return;
-        setBusy(true);
-        setStatus("Stopping", "busy");
-    }
+async function stopApp(force = false) {
+    const port = (state.config && state.config.appPort) ? state.config.appPort : DEFAULT_APP_PORT;
+    log(`Stopping application (Port: ${port})...`, "info");
 
-    try {
-        if (state.currentPid) {
+    // 1. Kill by Known PID (Tree Kill)
+    if (state.currentPid) {
+        try {
             await Neutralino.os.execCommand(`taskkill /T /F /PID ${state.currentPid}`);
-            state.currentPid = null;
-            ui.appPid.textContent = "-";
-            log("Stopped spawned process.");
-        }
-
-        // Safely resolve port even if config is not fully loaded
-        const port = (state.config && state.config.appPort) ? state.config.appPort : DEFAULT_APP_PORT;
-        const command = `powershell -NoProfile -Command "$pid = (Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty OwningProcess); if ($pid) { Stop-Process -Id $pid -Force; 'stopped'; } else { 'notfound'; }"`;
-        const result = await Neutralino.os.execCommand(command);
-        if (result.stdOut && result.stdOut.includes("stopped")) {
-            log(`Stopped process on port ${port}.`);
-        } else if (result.stdOut && result.stdOut.includes("notfound")) {
-            log(`No process found on port ${port}.`);
-        }
-
-        if (state.config && state.config.allowNodeKill) {
-            await Neutralino.os.execCommand("taskkill /F /IM node.exe");
-            log("Forced stop for node.exe.", "warn");
-        }
-
-        ui.appPid.textContent = "-";
-        setRuntimeBadge("Stopped", "badge-neutral");
-        
-        state.isRunning = false;
-        
-    } catch (err) {
-        log(`Stop failed: ${err.message}`, "error");
-    } finally {
-        if (!isInternal) {
-            setBusy(false);
-            setStatus("Ready", "idle");
-        }
-        updateButtonState();
+            log(`Sent kill signal to PID ${state.currentPid}.`, "info", false);
+        } catch (e) { /* ignore */ }
+        state.currentPid = null;
     }
+
+    // 2. Kill by Port (PowerShell Fallback -> Taskkill Tree)
+    // Useful if we lost the PID (restart scenario) but found the port active
+    try {
+        const foundPid = await getPidFromPort(port);
+        if (foundPid) {
+             log(`Found PID ${foundPid} on port ${port}. Executing Tree Kill...`, "warn", false);
+             await Neutralino.os.execCommand(`taskkill /T /F /PID ${foundPid}`);
+             // Wait a moment for the tree to collapse
+             await new Promise(r => setTimeout(r, 500));
+        }
+    } catch (e) { 
+        console.error("Kill by port failed:", e);
+    }
+
+    // 3. Nuclear Option (Force Kill all node.exe and related tools)
+    // CRITICAL for updates: Ensures no stray node.exe holds a lock on the folder.
+    if (force || (state.config && state.config.allowNodeKill)) {
+        log("Ensuring all runtime processes are terminated...", "warn");
+        try {
+            await Neutralino.os.execCommand("taskkill /F /IM node.exe");
+        } catch (e) { /* ignore */ }
+        
+        // Also kill oc.exe if it's running (common child process)
+        try {
+            await Neutralino.os.execCommand("taskkill /F /IM oc.exe");
+        } catch (e) { /* ignore */ }
+    }
+
+    // 4. Verification Loop (Wait for file locks to release)
+    // Windows file system is slow to release locks. We wait up to 5 seconds.
+    let attempts = 0;
+    while (await checkPortActive(port) && attempts < 10) {
+        await new Promise(r => setTimeout(r, 500)); // Wait 500ms
+        attempts++;
+    }
+
+    // Final Check
+    if (await checkPortActive(port)) {
+        log(`CRITICAL WARNING: Port ${port} is still active. Files may be locked.`, "error");
+        // If we are forcing (updating), this is a fatal error
+        if (force) {
+            throw new Error(`Cannot stop application on port ${port}. Please kill Node.js manually via Task Manager.`);
+        }
+    } else {
+        log("Application stopped successfully.");
+    }
+
+    ui.appPid.textContent = "-";
+    setRuntimeBadge("Stopped", "badge-neutral");
+    
+    state.isRunning = false;
+    updateButtonState();
 }
 
 async function extractZipNative(zipPath, destination) {
@@ -1050,7 +1119,12 @@ async function runUpdate(force) {
         // --- TRANSITION ---
         log("Downloads complete. Preparing system...");
         setProgress(0, "Stopping services...");
+        
+        // Force stop (kill node.exe) to ensure file locks are released
         await stopApp(true);
+        
+        // Extra safety pause for OS to release handles
+        await new Promise(r => setTimeout(r, 1000));
         
         // BACKUP AI MODELS BEFORE DELETE
         await backupAiModels();
@@ -1341,10 +1415,18 @@ async function init() {
     const port = state.config.appPort || DEFAULT_APP_PORT;
     if (await checkPortActive(port)) {
         state.isRunning = true;
+        
+        // Try to find the PID so we can kill it properly later
+        const foundPid = await getPidFromPort(port);
+        if (foundPid) {
+            state.currentPid = foundPid;
+            ui.appPid.textContent = `${foundPid}`;
+            log(`Attached to existing process (PID: ${foundPid}).`, "info");
+        } else {
+            log(`Detected active process on port ${port} (PID Unknown).`, "info");
+        }
+
         setRuntimeBadge("Running (Found)", "success");
-        log(`Detected active process on port ${port}. Attached control.`, "info");
-        // We don't have the PID if it wasn't started by us, so we can't kill by PID, only by Port.
-        // But stopApp handles 'kill by port' too.
     }
     updateButtonState();
 
