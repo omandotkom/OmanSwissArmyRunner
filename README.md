@@ -36,7 +36,7 @@ Built with [Neutralinojs](https://neutralino.js.org/), this runner serves as the
 ## 🛠️ How it Works
 
 1.  **Initialization**:
-    - Checks for `node.exe` and `runner-config.json`.
+    - Checks for `oman_node.exe` and `runner-config.json`.
     - Verifies if the main app is installed in `./oman-swiss-army-tool/`.
     - Checks GitHub for the latest release tag.
 
@@ -49,7 +49,7 @@ Built with [Neutralinojs](https://neutralino.js.org/), this runner serves as the
     - **Finalize**: Updates the local version tag.
 
 3.  **Execution**:
-    - Spawns a child process: `cmd /c "set PORT=1998 && node server.js"`.
+    - Spawns a child process: `cmd /c "set PORT=1998 && oman_node.exe server.js"`.
     - Opens your default web browser to `http://localhost:1998`.
 
 ---
@@ -64,7 +64,7 @@ The runner creates a `runner-config.json` file in the root directory. You genera
   "installDir": ".../oman-swiss-army-tool", // Path to the main app
   "startCommand": "cmd /c start.bat", // Legacy command (overridden by internal logic now)
   "appPort": 1998,                   // Port to run the Next.js server on
-  "allowNodeKill": false             // If true, allows "Taskkill /IM node.exe" (Aggressive)
+  "allowNodeKill": false             // If true, allows "Taskkill /IM oman_node.exe" (Aggressive)
 }
 ```
 

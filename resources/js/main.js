@@ -950,70 +950,86 @@ async function startApp() {
 }
 
 async function stopApp(force = false) {
+    if (state.busy && !force) return; // Prevent double click unless forced
+    setBusy(true);
+    setStatus("Stopping", "busy", "Terminating process...");
+    
     const port = (state.config && state.config.appPort) ? state.config.appPort : DEFAULT_APP_PORT;
     log(`Stopping application (Port: ${port})...`, "info");
 
-    // 1. Kill by Known PID (Tree Kill)
-    if (state.currentPid) {
-        try {
-            await Neutralino.os.execCommand(`taskkill /T /F /PID ${state.currentPid}`);
-            log(`Sent kill signal to PID ${state.currentPid}.`, "info", false);
-        } catch (e) { /* ignore */ }
-        state.currentPid = null;
-    }
-
-    // 2. Kill by Port (PowerShell Fallback -> Taskkill Tree)
-    // Useful if we lost the PID (restart scenario) but found the port active
     try {
-        const foundPid = await getPidFromPort(port);
-        if (foundPid) {
-             log(`Found PID ${foundPid} on port ${port}. Executing Tree Kill...`, "warn", false);
-             await Neutralino.os.execCommand(`taskkill /T /F /PID ${foundPid}`);
-             // Wait a moment for the tree to collapse
-             await new Promise(r => setTimeout(r, 500));
+        // 1. Kill by Known PID (Tree Kill)
+        if (state.currentPid) {
+            try {
+                await Neutralino.os.execCommand(`taskkill /T /F /PID ${state.currentPid}`);
+                log(`Sent kill signal to PID ${state.currentPid}.`, "info", false);
+            } catch (e) { /* ignore */ }
+            state.currentPid = null;
         }
-    } catch (e) { 
-        console.error("Kill by port failed:", e);
-    }
 
-    // 3. Nuclear Option (Force Kill all node.exe and related tools)
-    // CRITICAL for updates: Ensures no stray node.exe holds a lock on the folder.
-    if (force || (state.config && state.config.allowNodeKill)) {
-        log("Ensuring all runtime processes are terminated...", "warn");
+        // 2. Kill by Port (PowerShell Fallback -> Taskkill Tree)
+        // Useful if we lost the PID (restart scenario) but found the port active
         try {
-            await Neutralino.os.execCommand("taskkill /F /IM node.exe");
-        } catch (e) { /* ignore */ }
-        
-        // Also kill oc.exe if it's running (common child process)
-        try {
-            await Neutralino.os.execCommand("taskkill /F /IM oc.exe");
-        } catch (e) { /* ignore */ }
-    }
-
-    // 4. Verification Loop (Wait for file locks to release)
-    // Windows file system is slow to release locks. We wait up to 5 seconds.
-    let attempts = 0;
-    while (await checkPortActive(port) && attempts < 10) {
-        await new Promise(r => setTimeout(r, 500)); // Wait 500ms
-        attempts++;
-    }
-
-    // Final Check
-    if (await checkPortActive(port)) {
-        log(`CRITICAL WARNING: Port ${port} is still active. Files may be locked.`, "error");
-        // If we are forcing (updating), this is a fatal error
-        if (force) {
-            throw new Error(`Cannot stop application on port ${port}. Please kill Node.js manually via Task Manager.`);
+            const foundPid = await getPidFromPort(port);
+            if (foundPid) {
+                 log(`Found PID ${foundPid} on port ${port}. Executing Tree Kill...`, "warn", false);
+                 await Neutralino.os.execCommand(`taskkill /T /F /PID ${foundPid}`);
+                 // Wait a moment for the tree to collapse
+                 await new Promise(r => setTimeout(r, 500));
+            }
+        } catch (e) { 
+            console.error("Kill by port failed:", e);
         }
-    } else {
-        log("Application stopped successfully.");
-    }
 
-    ui.appPid.textContent = "-";
-    setRuntimeBadge("Stopped", "badge-neutral");
-    
-    state.isRunning = false;
-    updateButtonState();
+        // 3. Nuclear Option (Force Kill all oman_node.exe and related tools)
+        // CRITICAL for updates: Ensures no stray runtime holds a lock on the folder.
+        if (force || (state.config && state.config.allowNodeKill)) {
+            log("Ensuring all runtime processes are terminated...", "warn");
+            try {
+                await Neutralino.os.execCommand(`taskkill /F /IM ${NODE_EXE_NAME}`);
+            } catch (e) { /* ignore */ }
+            
+            // Also kill oc.exe if it's running (common child process)
+            try {
+                await Neutralino.os.execCommand("taskkill /F /IM oc.exe");
+            } catch (e) { /* ignore */ }
+        }
+
+        // 4. Verification Loop (Wait for file locks to release)
+        // Windows file system is slow to release locks. We wait up to 5 seconds.
+        let attempts = 0;
+        while (await checkPortActive(port) && attempts < 10) {
+            await new Promise(r => setTimeout(r, 500)); // Wait 500ms
+            attempts++;
+        }
+
+        // Final Check
+        if (await checkPortActive(port)) {
+            log(`CRITICAL WARNING: Port ${port} is still active. Files may be locked.`, "error");
+            // If we are forcing (updating), this is a fatal error
+            if (force) {
+                throw new Error(`Cannot stop application on port ${port}. Please kill Node.js manually via Task Manager.`);
+            }
+        } else {
+            log("Application stopped successfully.");
+        }
+
+        ui.appPid.textContent = "-";
+        setRuntimeBadge("Stopped", "badge-neutral");
+        state.isRunning = false;
+
+    } catch (err) {
+        log(`Stop failed: ${err.message}`, "error");
+    } finally {
+        setBusy(false);
+        // Only reset status to Ready if we are not in the middle of a larger operation (like Update)
+        // But since stopApp is mostly standalone or part of update (which manages its own status),
+        // we can set it to Ready if not forcing (manual stop)
+        if (!force) {
+             setStatus("Ready", "idle", "Application stopped.");
+        }
+        updateButtonState();
+    }
 }
 
 async function extractZipNative(zipPath, destination) {

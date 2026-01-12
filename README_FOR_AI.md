@@ -104,7 +104,7 @@ await Neutralino.os.execCommand(`powershell -command "Expand-Archive -Path 'upda
 
 #### D. Start / Stop Application
 *   **Start:** `Neutralino.os.spawnProcess('cmd /c start.bat')`
-*   **Stop:** `Neutralino.os.execCommand('taskkill /F /IM node.exe')` (Be careful to only kill the child process if possible, or filter by command line).
+*   **Stop:** `Neutralino.os.execCommand('taskkill /F /IM oman_node.exe')` (Be careful to only kill the child process if possible, or filter by command line).
 
 ### Step 4: Building the EXE
 Run:
