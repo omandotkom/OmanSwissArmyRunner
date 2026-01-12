@@ -8,6 +8,7 @@ const DEFAULT_APP_PORT = 1998;
 const CONFIG_FILENAME = "runner-config.json";
 const OC_TOOLS_URL = "https://mirror.openshift.com/pub/openshift-v4/clients/ocp/latest/openshift-client-windows.zip";
 const NODE_URL = "https://nodejs.org/dist/v20.18.1/win-x64/node.exe";
+const NODE_EXE_NAME = "oman_node.exe";
 
 const AI_FILES = [
     // Qwen2.5-Coder (0.5B) - Via Bantupedia Mirror (Custom Path & Rename)
@@ -857,17 +858,14 @@ async function resolveStartCommand(config) {
     
     // Cek apakah ada local node binary
     const binDir = await Neutralino.filesystem.getJoinedPath(state.paths.dataDir, "bin");
-    const localNodePath = await Neutralino.filesystem.getJoinedPath(binDir, "node.exe");
+    const localNodePath = await Neutralino.filesystem.getJoinedPath(binDir, NODE_EXE_NAME);
     
-    let nodeCmd = "node"; // Default global
-    if (await pathExists(localNodePath)) {
-        nodeCmd = quotePath(localNodePath);
-        log("Using local Node.js runtime.", "info", false);
-    } else {
-        log("Local Node.js not found, using global.", "warn", false);
+    if (!(await pathExists(localNodePath))) {
+        throw new Error(`Local runtime (${NODE_EXE_NAME}) missing. Please run Update to install it.`);
     }
 
-    return `cmd /c "set PORT=${port} && ${nodeCmd} server.js"`;
+    log("Using local Node.js runtime.", "info", false);
+    return `cmd /c "set PORT=${port} && ${quotePath(localNodePath)} server.js"`;
 }
 
 async function startApp() {
@@ -929,8 +927,8 @@ async function stopApp(isInternal = false) {
         }
 
         if (state.config && state.config.allowNodeKill) {
-            await Neutralino.os.execCommand("taskkill /F /IM node.exe");
-            log("Forced stop for node.exe.", "warn");
+            await Neutralino.os.execCommand(`taskkill /F /IM ${NODE_EXE_NAME}`);
+            log(`Forced stop for ${NODE_EXE_NAME}.`, "warn");
         }
 
         ui.appPid.textContent = "-";
@@ -1012,7 +1010,7 @@ async function runUpdate(force) {
         const runnerBinDir = await Neutralino.filesystem.getJoinedPath(state.paths.dataDir, "bin");
         await ensureDirectory(runnerBinDir);
 
-        const nodeExePath = await Neutralino.filesystem.getJoinedPath(runnerBinDir, "node.exe");
+        const nodeExePath = await Neutralino.filesystem.getJoinedPath(runnerBinDir, NODE_EXE_NAME);
         const needNode = !(await pathExists(nodeExePath));
 
         // OC moves to app bin (volatile, inside installDir) per user request
