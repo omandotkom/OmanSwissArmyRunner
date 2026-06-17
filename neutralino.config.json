@@ -23,21 +23,21 @@
   "modes": {
     "window": {
       "title": "Oman Swiss Army Launcher",
-      "width": 920,
-      "height": 920,
-      "minWidth": 920,
-      "minHeight": 920,
+      "width": 960,
+      "height": 960,
+      "minWidth": 800,
+      "minHeight": 700,
       "center": true,
       "fullScreen": false,
       "alwaysOnTop": false,
       "icon": "/resources/icons/appIcon.ico",
       "enableInspector": false,
       "borderless": false,
-      "maximize": true,
+      "maximize": false,
       "hidden": false,
       "resizable": true,
       "exitProcessOnClose": true,
-      "processArgs": "--disable-web-security"
+      "processArgs": ""
     }
   },
   "cli": {

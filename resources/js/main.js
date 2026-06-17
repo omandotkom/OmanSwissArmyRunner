@@ -1370,11 +1370,23 @@ async function checkInstallStatus() {
 }
 
 async function init() {
-    Neutralino.init();
+    try {
+        Neutralino.init();
+    } catch (e) {
+        console.error("Neutralino.init() failed:", e);
+    }
 
     // 1. Single Instance Check
     const canRun = await ensureSingleInstance();
     if (!canRun) return; // Exit initiated inside function
+
+    // 1b. Ensure window is visible & focused (fix for hidden window on cold start)
+    try {
+        await Neutralino.window.show();
+        await Neutralino.window.focus();
+    } catch (e) {
+        console.warn("Window show/focus fallback failed:", e);
+    }
 
     Neutralino.events.on("windowClose", async () => {
         // Ensure app process is killed on exit
@@ -1446,7 +1458,21 @@ async function init() {
 
     bindEvents();
     log("Launcher ready.");
-    
+
+    // 2. Post-init window safety: re-center if window ended up off-screen or zero-sized
+    try {
+        const pos = await Neutralino.window.getPosition();
+        const size = await Neutralino.window.getSize();
+        // If window is somehow off-screen (negative coords) or too small, reset it
+        if (pos.x < -100 || pos.y < -100 || size.width < 200 || size.height < 200) {
+            await Neutralino.window.setSize({ width: 960, height: 960 });
+            await Neutralino.window.center();
+            log("Window position corrected.", "warn", false);
+        }
+    } catch (e) {
+        console.warn("Window safety check failed:", e);
+    }
+
     // Async tasks (Non-blocking UI)
     (async () => {
         setBusy(true);
